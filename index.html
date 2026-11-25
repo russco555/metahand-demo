@@ -48,7 +48,7 @@
 </header>
 <main>
   <section class="view on" id="home">
-    <button class="role" data-go="hand"><b>Hand owner (this phone)</b><span>Point this phone's rear camera at your hand. You see your hand inside the other device's view. Also works alone with a background image.</span></button>
+    <button class="role" data-go="hand"><b>Hand owner (this phone)</b><span>Point this phone's rear camera at your hand. You see your hand inside the other device's view. Also works alone with an uploaded photo or looping video background.</span></button>
     <button class="role" data-go="scene"><b>Scene camera (other device)</b><span>Streams this device's camera to the hand owner. Enter the code shown on the hand owner's phone.</span></button>
     <p class="note">Needs HTTPS and camera permission. Both devices on the same Wi-Fi works best; mobile data needs a TURN relay (see TURN in the code).</p>
   </section>
@@ -62,7 +62,7 @@
     </div>
     <div class="row">
       <button class="primary" id="hStart" disabled>Start</button>
-      <label class="file">Background<input id="hBg" type="file" accept="image/*"></label>
+      <label class="file">Background<input id="hBg" type="file" accept="image/*,video/*"></label>
     </div>
     <div class="row">
       <select id="hCam"><option value="environment">Rear camera (hand behind phone)</option><option value="user">Front camera</option></select>
@@ -457,13 +457,25 @@ const out = $("out"), ox = out.getContext("2d");
 let comp = null;
 const gateC = canvas(224, 224), gx = gateC.getContext("2d");
 const hVideo = $("hVideo"), remote = $("hRemote");
-let cutter = null, running = false, bgImg = null, peer = null, remoteOk = false;
+let cutter = null, running = false, bgImg = null, bgVideo = null, bgUrl = null, peer = null, remoteOk = false;
 const gate = { ok: false, score: null, until: 0, busy: false, last: 0 };
 let fps = 0, fpsN = 0, fpsT = performance.now(), info = { hands: 0, object: 0 };
 
 $("hBg").addEventListener("change", (e) => {
   const f = e.target.files?.[0]; if (!f) return;
-  const img = new Image(); img.onload = () => (bgImg = img); img.src = URL.createObjectURL(f);
+  if (bgUrl) URL.revokeObjectURL(bgUrl);
+  bgUrl = URL.createObjectURL(f);
+  bgImg = null; bgVideo = null;
+  if (f.type.startsWith("video/")) {
+    const v = document.createElement("video");
+    v.muted = true; v.loop = true; v.autoplay = true; v.playsInline = true;
+    v.preload = "auto"; v.src = bgUrl;
+    v.addEventListener("error", () => say("Could not load this video. Try MP4 (H.264) or WebM.", "bad"), { once: true });
+    v.addEventListener("loadeddata", () => { bgVideo = v; v.play().catch(() => say("Tap Background again to allow video playback.", "bad")); }, { once: true });
+    v.load();
+  } else {
+    const img = new Image(); img.onload = () => (bgImg = img); img.onerror = () => say("Could not load this image.", "bad"); img.src = bgUrl;
+  }
 });
 
 function drawCover(ctx, src, sw, sh, W, H) {
@@ -473,6 +485,7 @@ function drawCover(ctx, src, sw, sh, W, H) {
 function drawScene(W, H) {
   remoteOk = remote.readyState >= 2 && remote.videoWidth > 0;
   if (remoteOk) drawCover(ox, remote, remote.videoWidth, remote.videoHeight, W, H);
+  else if (bgVideo && bgVideo.readyState >= 2 && bgVideo.videoWidth) drawCover(ox, bgVideo, bgVideo.videoWidth, bgVideo.videoHeight, W, H);
   else if (bgImg) drawCover(ox, bgImg, bgImg.width, bgImg.height, W, H);
   else {
     const g = ox.createLinearGradient(0, 0, 0, H);
@@ -525,7 +538,7 @@ function render() {
   b.style.color = !gate.ok ? "var(--bad)" : info.object ? "var(--ok)" : "var(--text)";
   $("hStats").textContent =
     `fps ${fps.toFixed(1)} · hands ${info.hands} · object ${info.object ? info.object.toFixed(2) : "–"} · cut ${cutter.w}×${cutter.h}\n` +
-    `scene ${remoteOk ? remote.videoWidth + "×" + remote.videoHeight + " (live)" : bgImg ? "image" : "default"} · ` +
+    `scene ${remoteOk ? remote.videoWidth + "×" + remote.videoHeight + " (live)" : bgVideo && bgVideo.readyState >= 2 ? "video background" : bgImg ? "image background" : "default"} · ` +
     `safety ${gate.score == null ? "pending" : gate.score.toFixed(3)} ${gate.ok ? "pass" : "withheld"}`;
 }
 let lastVT = -1;
