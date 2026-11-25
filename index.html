@@ -71,7 +71,7 @@ const CFG = {
   DETECT_EVERY: 3,        // run object detector every N frames
   OBJMASK_EVERY: 4,       // refresh object mask every N frames
   OBJ_MISS_LIMIT: 3,      // detector misses before dropping the object
-  HAND_PAD: 0.35,         // pad hand bbox by this fraction of its size
+  HAND_PAD: 0.65,         // wider safety margin keeps fingertips and wrist inside the live skin mask
   OBJ_PAD: 0.10,
   SKIN_CAT: 2,            // selfie_multiclass: 2 = body-skin
   FEATHER_PX: 2,
@@ -308,7 +308,7 @@ function process(ts) {
   badge.style.color = objBox ? "var(--ok)" : "var(--text)";
   statsEl.textContent =
     `fps ${fps.toFixed(1)}  ·  hands ${handCount}  ·  object ${objBox ? objScore.toFixed(2) : "–"}\n` +
-    `mask ${depthMode.checked ? (depthMap && ts - depthUpdatedAt < 2200 ? "depth + skin" : "depth warming up") : "original skin + hand ROI"}\n` +
+    `mask ${depthMode.checked ? (depthMap && ts - depthUpdatedAt < 2200 ? "depth + skin inside hand ROI" : "skin inside hand ROI (depth warming up)") : "skin inside hand ROI"}\n` +
     `work ${W}×${H}  ·  out ${OW}×${OH}  ·  allowlist: ${CFG.ALLOWED.join(", ")}`;
 }
 
