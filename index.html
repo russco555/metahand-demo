@@ -25,7 +25,6 @@
   #stats { max-width:520px; margin:10px auto 30px; color:var(--muted); font:12px/1.5 ui-monospace,Menlo,monospace; white-space:pre-wrap; }
   #video { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
 </style>
-<!-- GitHub Pages redeploy trigger: safety-gate removal build -->
 </head>
 <body>
 <header>
@@ -71,7 +70,7 @@ const CFG = {
   DETECT_EVERY: 3,        // run object detector every N frames
   OBJMASK_EVERY: 4,       // refresh object mask every N frames
   OBJ_MISS_LIMIT: 3,      // detector misses before dropping the object
-  HAND_PAD: 0.65,         // wider safety margin keeps fingertips and wrist inside the live skin mask
+  HAND_PAD: 0.35,         // pad hand bbox by this fraction of its size
   OBJ_PAD: 0.10,
   SKIN_CAT: 2,            // selfie_multiclass: 2 = body-skin
   FEATHER_PX: 2,
@@ -243,24 +242,17 @@ function process(ts) {
     });
   }
 
-  // 5. Build alpha mask at work resolution. Depth refines the skin mask
-  // only inside detected hand regions; it never expands the mask beyond them.
+  // 5. Build alpha mask at work resolution
   const d = maskImg.data; d.fill(0);
-  const depthFresh = depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200;
-  if (handCount && skin) {
+  if (handCount && skin && !(depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200)) {
     for (const hb of handBoxes) {
       const p = toPx(hb, W, H);
       for (let y = p.y0; y < p.y1; y++) {
-        const sy = Math.min(skinH - 1, Math.floor(y * skinH / H)) * skinW;
-        const dy = Math.min(depthH - 1, Math.floor(y * depthH / H)) * depthW;
+        const sy = Math.floor(y * skinH / H) * skinW;
         for (let x = p.x0; x < p.x1; x++) {
-          const sx = Math.min(skinW - 1, Math.floor(x * skinW / W));
-          if (skin[sy + sx] !== CFG.SKIN_CAT) continue;
-          if (depthFresh) {
-            const dx = Math.min(depthW - 1, Math.floor(x * depthW / W));
-            if (depthMap.data[dy + dx] < depthMap.cutoff) continue;
+          if (skin[sy + Math.floor(x * skinW / W)] === CFG.SKIN_CAT) {
+            const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255;
           }
-          const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255;
         }
       }
     }
@@ -273,6 +265,21 @@ function process(ts) {
             const i = (y * W + x) * 4; d[i] = 255; d[i + 1] = 160; d[i + 3] = 255;
           }
         }
+      }
+    }
+  }
+  if (depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200 && skin) {
+    // Hybrid mask: skin semantics remove non-skin objects; relative depth keeps only the nearest skin pixels.
+    const d = maskImg.data;
+    const nearFraction = Number(depthNear.value) / 100;
+    const cutoff = depthMap.cutoff;
+    for (let y = 0; y < H; y++) {
+      const sy = Math.min(skinH - 1, Math.floor(y * skinH / H)) * skinW;
+      const dy = Math.min(depthH - 1, Math.floor(y * depthH / H)) * depthW;
+      for (let x = 0; x < W; x++) {
+        if (skin[sy + Math.min(skinW - 1, Math.floor(x * skinW / W))] !== CFG.SKIN_CAT) continue;
+        const z = depthMap.data[dy + Math.min(depthW - 1, Math.floor(x * depthW / W))];
+        if (z >= cutoff) { const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255; }
       }
     }
   }
@@ -308,7 +315,7 @@ function process(ts) {
   badge.style.color = objBox ? "var(--ok)" : "var(--text)";
   statsEl.textContent =
     `fps ${fps.toFixed(1)}  ·  hands ${handCount}  ·  object ${objBox ? objScore.toFixed(2) : "–"}\n` +
-    `mask ${depthMode.checked ? (depthMap && ts - depthUpdatedAt < 2200 ? "depth + skin inside hand ROI" : "skin inside hand ROI (depth warming up)") : "skin inside hand ROI"}\n` +
+    `mask ${depthMode.checked ? (depthMap && ts - depthUpdatedAt < 2200 ? "depth + skin" : "depth warming up") : "original skin + hand ROI"}\n` +
     `work ${W}×${H}  ·  out ${OW}×${OH}  ·  allowlist: ${CFG.ALLOWED.join(", ")}`;
 }
 
