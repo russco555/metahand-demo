@@ -243,17 +243,24 @@ function process(ts) {
     });
   }
 
-  // 5. Build alpha mask at work resolution
+  // 5. Build alpha mask at work resolution. Depth refines the skin mask
+  // only inside detected hand regions; it never expands the mask beyond them.
   const d = maskImg.data; d.fill(0);
-  if (handCount && skin && !(depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200)) {
+  const depthFresh = depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200;
+  if (handCount && skin) {
     for (const hb of handBoxes) {
       const p = toPx(hb, W, H);
       for (let y = p.y0; y < p.y1; y++) {
-        const sy = Math.floor(y * skinH / H) * skinW;
+        const sy = Math.min(skinH - 1, Math.floor(y * skinH / H)) * skinW;
+        const dy = Math.min(depthH - 1, Math.floor(y * depthH / H)) * depthW;
         for (let x = p.x0; x < p.x1; x++) {
-          if (skin[sy + Math.floor(x * skinW / W)] === CFG.SKIN_CAT) {
-            const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255;
+          const sx = Math.min(skinW - 1, Math.floor(x * skinW / W));
+          if (skin[sy + sx] !== CFG.SKIN_CAT) continue;
+          if (depthFresh) {
+            const dx = Math.min(depthW - 1, Math.floor(x * depthW / W));
+            if (depthMap.data[dy + dx] < depthMap.cutoff) continue;
           }
+          const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255;
         }
       }
     }
@@ -266,21 +273,6 @@ function process(ts) {
             const i = (y * W + x) * 4; d[i] = 255; d[i + 1] = 160; d[i + 3] = 255;
           }
         }
-      }
-    }
-  }
-  if (depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200 && skin) {
-    // Hybrid mask: skin semantics remove non-skin objects; relative depth keeps only the nearest skin pixels.
-    const d = maskImg.data;
-    const nearFraction = Number(depthNear.value) / 100;
-    const cutoff = depthMap.cutoff;
-    for (let y = 0; y < H; y++) {
-      const sy = Math.min(skinH - 1, Math.floor(y * skinH / H)) * skinW;
-      const dy = Math.min(depthH - 1, Math.floor(y * depthH / H)) * depthW;
-      for (let x = 0; x < W; x++) {
-        if (skin[sy + Math.min(skinW - 1, Math.floor(x * skinW / W))] !== CFG.SKIN_CAT) continue;
-        const z = depthMap.data[dy + Math.min(depthW - 1, Math.floor(x * depthW / W))];
-        if (z >= cutoff) { const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255; }
       }
     }
   }
