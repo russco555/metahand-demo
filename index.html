@@ -227,7 +227,7 @@ function makeCutter(video, M, maxDim) {
   const pack = canvas(w * 2, h), hull = canvas(w, h), mask = canvas(w, h), seg = canvas(w, h), frame = canvas(w, h), obj = canvas(w, h);
   const pctx = pack.getContext("2d"), hctx = hull.getContext("2d"), mctx = mask.getContext("2d");
   const sctx = seg.getContext("2d"), fctx = frame.getContext("2d"), octx = obj.getContext("2d");
-  const opt = { expand: 1.2, arm: true, bridge: true };
+  const opt = { expand: 1.06, arm: false, bridge: false };
   const sm = canvas(160, Math.max(1, Math.round(160 * h / w))), smx = sm.getContext("2d", { willReadFrequently: true });
   let segImg = null, objImg = null, last = [], lastT = -1e9, lastTs = 0, n = 0;
   let objBox = null, objScore = 0, objMiss = 0, objReady = false;
@@ -335,13 +335,15 @@ function makeCutter(video, M, maxDim) {
 
   function step() {
     let ts = performance.now(); if (ts <= lastTs) ts = lastTs + 1; lastTs = ts; n++;
-    fctx.drawImage(video, 0, 0, w, h);                // one snapshot for tracking, mask and picture
+    fctx.clearRect(0, 0, w, h);
+    fctx.drawImage(video, 0, 0, w, h);                // fresh snapshot for this frame only
     const r = M.hand.detectForVideo(frame, ts);
     if (r.landmarks && r.landmarks.length) { last = r.landmarks; lastT = ts; }
-    const hands = ts - lastT < 250 ? last : [];
+    const hands = ts - lastT < 80 ? last : [];
     hctx.clearRect(0, 0, w, h); hctx.fillStyle = "#fff";
     for (const lm of hands) fillPoly(hctx, polygon(lm));
-    mctx.globalCompositeOperation = "source-over"; mctx.clearRect(0, 0, w, h);
+    mctx.globalCompositeOperation = "source-over";
+    mctx.clearRect(0, 0, w, h);
     heldObject(hands, ts);
     if (hands.length) {
       let any = false;
@@ -357,10 +359,11 @@ function makeCutter(video, M, maxDim) {
         mctx.globalCompositeOperation = "source-over"; mctx.fillStyle = "#fff";
         for (const lm of hands) fillPoly(mctx, core(lm));
         if (objBox && objReady) mctx.drawImage(obj, 0, 0, w, h);
-        if (opt.bridge) for (const lm of hands) bridge(lm);
+        // Deliberately do not bridge the wrist into the forearm: that broad fill caused background/body leakage.
         keepConnected(hands);
       } else mctx.drawImage(hull, 0, 0);
     }
+    pctx.clearRect(0, 0, w * 2, h);
     pctx.drawImage(frame, 0, 0);
     pctx.fillStyle = "#000"; pctx.fillRect(w, 0, w, h);
     pctx.drawImage(mask, w, 0);
