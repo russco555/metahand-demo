@@ -28,6 +28,9 @@
 <!-- Safety gate model (TensorFlow.js + NSFWJS) -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
+<!-- Safety model weights, served from jsDelivr (the library's old default host is offline) -->
+<script src="https://cdn.jsdelivr.net/npm/nsfwjs@4.2.1/dist/models/mobilenet_v2/model.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nsfwjs@4.2.1/dist/models/mobilenet_v2/group1-shard1of1.min.js"></script>
 </head>
 <body>
 <header>
@@ -127,7 +130,16 @@ async function loadModels() {
     create(InteractiveSegmenter, vision, M.magic, { outputCategoryMask: false, outputConfidenceMasks: true }),
   ]);
   try {
-    nsfwModel = await window.nsfwjs.load();
+    const mj = window.model, w64 = window.group1_shard1of1;
+    if (!mj || !w64) throw new Error("safety model files missing");
+    const bin = atob(w64), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const handler = tf.io.fromMemory({
+      modelTopology: mj.modelTopology,
+      weightSpecs: mj.weightsManifest[0].weights,
+      weightData: bytes.buffer,
+    });
+    nsfwModel = await window.nsfwjs.load(handler, { size: 224 });
   } catch (e) {
     console.error("Safety model failed", e);
     nsfwModel = null;
