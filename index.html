@@ -3,396 +3,576 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>MetaHand – hand + held product segmentation</title>
+<title>MetaHand Live – hand owner view</title>
 <style>
-  :root { --bg:#101216; --panel:#181b21; --line:#2a2e36; --text:#e9ecf1; --muted:#9aa1ad; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; }
-  * { box-sizing:border-box; }
-  html,body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-  header { padding:18px 18px 10px; border-bottom:1px solid var(--line); }
-  h1 { margin:0 0 4px; font-size:22px; }
-  header p { margin:0; color:var(--muted); font-size:14px; }
-  #status { margin-top:8px; font-size:13px; color:var(--warn); }
-  #status.ok { color:var(--ok); } #status.bad { color:var(--bad); }
-  main { padding:12px 18px; }
-  .stage { position:relative; width:100%; max-width:520px; margin:0 auto; border-radius:14px; overflow:hidden; background:#000; aspect-ratio:3/4; }
-  #out { width:100%; height:100%; object-fit:cover; display:block; }
-  #badge { position:absolute; left:10px; top:10px; padding:4px 9px; border-radius:999px; font-size:12px; background:rgba(0,0,0,.55); }
-  .controls { display:flex; flex-wrap:wrap; gap:8px; max-width:520px; margin:12px auto 0; }
-  button, .file { flex:1 1 auto; padding:11px 12px; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--text); font-size:14px; text-align:center; cursor:pointer; }
+  :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --text:#eef0f4; --muted:#9aa1ad; --acc:#ff5a3c; --ok:#4ade80; --bad:#f87171; }
+  * { box-sizing:border-box; min-width:0; }
+  html,body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { padding:16px 18px 10px; border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:20px; } header p { margin:2px 0 0; color:var(--muted); font-size:14px; }
+  main { max-width:560px; margin:0 auto; padding:14px 16px 40px; }
+  .view { display:none; } .view.on { display:block; }
+  .role { display:block; width:100%; text-align:left; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:12px; color:inherit; font:inherit; cursor:pointer; }
+  .role b { display:block; font-size:17px; margin-bottom:4px; } .role span { color:var(--muted); font-size:14px; }
+  .note { color:var(--muted); font-size:13px; }
+  .back { background:none; border:none; color:var(--muted); padding:0 0 10px; font:inherit; cursor:pointer; }
+  .stage { position:relative; width:100%; border-radius:14px; overflow:hidden; background:#000; }
+  canvas#out { width:100%; display:block; }
+  #badge { position:absolute; left:10px; top:10px; padding:3px 9px; border-radius:999px; font-size:12px; background:rgba(0,0,0,.55); }
+  #codeBox { position:absolute; right:10px; top:10px; padding:4px 10px; border-radius:10px; background:rgba(0,0,0,.55); font:700 18px ui-monospace,Menlo,monospace; letter-spacing:.1em; color:var(--acc); }
+  .row { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  button, select, input[type=text], .file { font:inherit; font-size:15px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--text); min-height:44px; }
+  button, .file { flex:1 1 auto; cursor:pointer; text-align:center; }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
   button:disabled { opacity:.45; }
   .file input { display:none; }
-  label.chk { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:13px; padding:4px 2px; }
-  #stats { max-width:520px; margin:10px auto 30px; color:var(--muted); font:12px/1.5 ui-monospace,Menlo,monospace; white-space:pre-wrap; }
-  #video { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+  label.chk { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:13px; }
+  .status { margin-top:10px; font-size:14px; }
+  .status.ok { color:var(--ok); } .status.bad { color:var(--bad); }
+  .stats { margin-top:6px; color:var(--muted); font:12px/1.5 ui-monospace,Menlo,monospace; white-space:pre-wrap; }
+  video.preview { width:100%; border-radius:12px; background:#000; display:block; }
+  video.hidden { position:fixed; left:0; top:0; width:2px; height:2px; opacity:0; pointer-events:none; }
+  .field { display:grid; gap:4px; margin-top:10px; color:var(--muted); font-size:14px; }
 </style>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<!-- Safety gate (TensorFlow.js + NSFWJS); model weights from jsDelivr -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nsfwjs@4.2.1/dist/models/mobilenet_v2/model.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nsfwjs@4.2.1/dist/models/mobilenet_v2/group1-shard1of1.min.js"></script>
 </head>
 <body>
 <header>
-  <h1>MetaHand Live · Product</h1>
-  <p>Hand + allowlisted held product, segmented and composited</p>
-  <div id="status">Loading models…</div>
+  <h1>MetaHand Live</h1>
+  <p>Your real hand, composited live on your own phone into another device's camera view</p>
 </header>
 <main>
-  <div class="stage">
-    <canvas id="out"></canvas>
-    <div id="badge">idle</div>
-  </div>
-  <div class="controls">
-    <button id="start" disabled>Start camera</button>
-    <button id="flip" disabled>Flip camera</button>
-    <label class="file">Background<input id="bgfile" type="file" accept="image/*"></label>
-  </div>
-  <div class="controls">
-    <label class="chk"><input type="checkbox" id="debug"> Show mask overlay</label>
-    <label class="chk"><input type="checkbox" id="depthMode"> Experimental: depth + skin</label>
-  </div>
-  <div class="controls" id="depthControls" hidden>
-    <label class="chk" for="depthNear">Nearest foreground: <span id="depthNearValue">45%</span></label>
-    <input id="depthNear" type="range" min="20" max="80" step="5" value="45" style="width:100%">
-  </div>
-  <div id="stats"></div>
+  <section class="view on" id="home">
+    <button class="role" data-go="hand"><b>Hand owner (this phone)</b><span>Point this phone's rear camera at your hand. You see your hand inside the other device's view. Also works alone with a background image.</span></button>
+    <button class="role" data-go="scene"><b>Scene camera (other device)</b><span>Streams this device's camera to the hand owner. Enter the code shown on the hand owner's phone.</span></button>
+    <p class="note">Needs HTTPS and camera permission. Both devices on the same Wi-Fi works best; mobile data needs a TURN relay (see TURN in the code).</p>
+  </section>
+
+  <section class="view" id="hand">
+    <button class="back" data-go="home">← Back</button>
+    <div class="stage">
+      <canvas id="out" width="540" height="960"></canvas>
+      <div id="badge">idle</div>
+      <div id="codeBox">······</div>
+    </div>
+    <div class="row">
+      <button class="primary" id="hStart" disabled>Start</button>
+      <label class="file">Background<input id="hBg" type="file" accept="image/*"></label>
+    </div>
+    <div class="row">
+      <select id="hCam"><option value="environment">Rear camera (hand behind phone)</option><option value="user">Front camera</option></select>
+      <select id="hDetail"><option value="384">Smooth</option><option value="512">Balanced</option><option value="640" selected>Sharp (Netlify)</option></select>
+    </div>
+    <div class="row"><label class="chk"><input type="checkbox" id="hDebug"> Show mask overlay</label></div>
+    <div class="status" id="hStatus">Loading models…</div>
+    <div class="stats" id="hStats"></div>
+  </section>
+
+  <section class="view" id="scene">
+    <button class="back" data-go="home">← Back</button>
+    <video class="preview" id="sPreview" playsinline muted autoplay></video>
+    <label class="field">Hand owner's code<input type="text" id="sCode" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. k3f9qa"></label>
+    <label class="field">Camera<select id="sCam"><option value="environment">Rear</option><option value="user">Front</option></select></label>
+    <div class="row"><button class="primary" id="sGo">Start camera &amp; connect</button></div>
+    <div class="status" id="sStatus">The hand owner's phone shows the code in the top corner.</div>
+  </section>
 </main>
-<video id="video" playsinline muted autoplay></video>
+<video class="hidden" id="hVideo" playsinline muted autoplay></video>
+<video class="hidden" id="hRemote" playsinline muted autoplay></video>
 
 <script type="module">
-import {
-  FilesetResolver, HandLandmarker, ObjectDetector, ImageSegmenter, InteractiveSegmenter
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { FilesetResolver, HandLandmarker, ImageSegmenter, ObjectDetector, InteractiveSegmenter }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
-// ---------------- Config ----------------
+// ================= Config =================
 const CFG = {
-  // Only these detector classes may be kept in the hand. COCO "hot dog" is the
-  // stand-in for a sausage until a custom product model is trained.
-  ALLOWED: ["hot dog"],
-  DETECT_MIN_SCORE: 0.3,
-  WORK_W: 320,            // processing width (height follows camera aspect)
-  OUT_MAX_H: 960,         // output canvas max height
-  DETECT_EVERY: 3,        // run object detector every N frames
-  OBJMASK_EVERY: 4,       // refresh object mask every N frames
-  OBJ_MISS_LIMIT: 3,      // detector misses before dropping the object
-  HAND_PAD: 0.35,         // pad hand bbox by this fraction of its size
-  OBJ_PAD: 0.10,
-  SKIN_CAT: 2,            // selfie_multiclass: 2 = body-skin
-  FEATHER_PX: 2,
+  ALLOWED: ["hot dog"],      // held objects that may stay in the hand (COCO "hot dog" stands in for sausage)
+  DETECT_MIN_SCORE: 0.3, DETECT_EVERY: 8, OBJMASK_EVERY: 4, OBJ_MISS_LIMIT: 3,
+  NSFW_EVERY_MS: 600, NSFW_CLASSES: ["Porn", "Hentai"], NSFW_BLOCK: 0.55, NSFW_HOLD_MS: 2000,
 };
-
+const PREFIX = "metahand-scene-";
+/* Mobile data usually needs a TURN relay. Put your own details here (Metered, Twilio, Cloudflare…). */
+const TURN = null; // e.g. { urls: ["turn:global.relay.metered.ca:443?transport=tcp"], username: "…", credential: "…" }
+const PEER_OPTS = { debug: 1, config: { iceServers: [
+  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+  ...(TURN ? [TURN] : [{ urls: ["turn:eu-0.turn.peerjs.com:3478", "turn:us-0.turn.peerjs.com:3478"], username: "peerjs", credential: "peerjsp" }]),
+] } };
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
-const M = {
+const MODELS = {
   hand:  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-  det:   "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite",
   seg:   "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite",
+  det:   "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite",
   magic: "https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite",
 };
 
-// ---------------- DOM ----------------
 const $ = (id) => document.getElementById(id);
-const video = $("video"), out = $("out"), octx = out.getContext("2d");
-const statusEl = $("status"), statsEl = $("stats"), badge = $("badge");
-const startBtn = $("start"), flipBtn = $("flip"), debugChk = $("debug");
-const depthMode = $("depthMode"), depthNear = $("depthNear"), depthNearValue = $("depthNearValue"), depthControls = $("depthControls");
-const setStatus = (t, cls = "") => { statusEl.textContent = t; statusEl.className = cls; };
+const canvas = (w = 1, h = 1) => { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; };
 
-const mk = (w = 1, h = 1, rf = false) => {
-  const c = document.createElement("canvas"); c.width = w; c.height = h;
-  return [c, c.getContext("2d", rf ? { willReadFrequently: true } : undefined)];
-};
-const [work, wctx]   = mk(1, 1, true);  // downscaled camera frame
-const [maskC, mctx]  = mk();            // alpha mask at work res
-const [cut, cctx]    = mk();            // camera cut-out at output res
-const [stage, sctx]  = mk();            // composited frame (what would be sent)
+// ================= Navigation =================
+function show(id) { document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.id === id)); }
+document.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => {
+  show(b.dataset.go);
+  if (b.dataset.go === "hand") initHand();
+}));
 
-// ---------------- Models ----------------
-let hands, detector, skinSeg, objSeg;
-let depthEstimator = null, depthBusy = false, depthMap = null, depthW = 0, depthH = 0, depthUpdatedAt = 0, depthFrame = 0;
-const [depthInput, depthInputCtx] = mk(1, 1);
+// ================= Connection helpers =================
+function watchIce(call, say, okMsg) {
+  const pc = call.peerConnection; if (!pc) return;
+  pc.addEventListener("iceconnectionstatechange", () => {
+    const st = pc.iceConnectionState;
+    if (st === "checking") say("Finding a network route…");
+    else if (st === "connected" || st === "completed") say(okMsg, "ok");
+    else if (st === "disconnected") say("Link interrupted, trying to recover…");
+    else if (st === "failed") say("Could not link the devices. Use the same Wi-Fi, or add a TURN server for mobile data.", "bad");
+  });
+}
+function keepAlive(peer, say) {
+  peer.on("disconnected", () => { say("Lost the signalling server, reconnecting…"); try { peer.reconnect(); } catch (e) {} });
+}
+async function openCamera(video, facing, cw = 1280, ch = 720) {
+  if (video.srcObject) video.srcObject.getTracks().forEach((t) => t.stop());
+  const s = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: facing }, width: { ideal: cw }, height: { ideal: ch }, frameRate: { ideal: 30 } }, audio: false,
+  });
+  video.srcObject = s; await video.play();
+  if (!video.videoWidth) await new Promise((r) => video.addEventListener("loadedmetadata", r, { once: true }));
+  return s;
+}
+
+// ================= Scene camera (other device) =================
+$("sGo").addEventListener("click", async () => {
+  const say = (t, c = "") => { $("sStatus").textContent = t; $("sStatus").className = "status " + c; };
+  const code = $("sCode").value.trim().toLowerCase();
+  if (!code) { say("Enter the code shown on the hand owner's phone.", "bad"); return; }
+  $("sGo").disabled = true;
+  try {
+    if (!window.Peer) throw new Error("Connection library failed to load");
+    say("Starting camera…");
+    const stream = await openCamera($("sPreview"), $("sCam").value);
+    const peer = new Peer(PEER_OPTS); keepAlive(peer, say);
+    peer.on("open", () => {
+      const call = peer.call(PREFIX + code, stream);
+      if (!call) { say("Could not start the call.", "bad"); $("sGo").disabled = false; return; }
+      say("Calling hand owner…");
+      watchIce(call, say, "Streaming this camera to the hand owner.");
+      call.on("close", () => { say("Disconnected. Tap to retry.", "bad"); $("sGo").disabled = false; });
+      call.on("error", (e) => say("Call error: " + (e.type || e.message || e), "bad"));
+    });
+    peer.on("error", (e) => { say(e.type === "peer-unavailable" ? "No hand owner with that code. Check it." : "Connection error: " + e.type, "bad"); $("sGo").disabled = false; });
+  } catch (e) { say("Error: " + e.message, "bad"); $("sGo").disabled = false; }
+});
+
+// ================= Hand owner =================
+let models = null, handInit = false;
+const say = (t, c = "") => { $("hStatus").textContent = t; $("hStatus").className = "status " + c; };
 
 async function create(Cls, vision, path, extra) {
   for (const delegate of ["GPU", "CPU"]) {
-    try {
-      return await Cls.createFromOptions(vision, { baseOptions: { modelAssetPath: path, delegate }, ...extra });
-    } catch (e) { if (delegate === "CPU") throw e; }
+    try { return await Cls.createFromOptions(vision, { baseOptions: { modelAssetPath: path, delegate }, ...extra }); }
+    catch (e) { if (delegate === "CPU") throw e; }
   }
 }
-
 async function loadModels() {
   const vision = await FilesetResolver.forVisionTasks(WASM);
-  [hands, detector, skinSeg, objSeg] = await Promise.all([
-    create(HandLandmarker, vision, M.hand, { runningMode: "VIDEO", numHands: 2 }),
-    create(ObjectDetector, vision, M.det, {
-      runningMode: "VIDEO", scoreThreshold: CFG.DETECT_MIN_SCORE,
-      categoryAllowlist: CFG.ALLOWED, maxResults: 3,
-    }),
-    create(ImageSegmenter, vision, M.seg, { runningMode: "VIDEO", outputCategoryMask: true, outputConfidenceMasks: false }),
-    create(InteractiveSegmenter, vision, M.magic, { outputCategoryMask: false, outputConfidenceMasks: true }),
+  const [hand, seg, det, magic] = await Promise.all([
+    create(HandLandmarker, vision, MODELS.hand, { runningMode: "VIDEO", numHands: 2 }),
+    create(ImageSegmenter, vision, MODELS.seg, { runningMode: "VIDEO", outputCategoryMask: false, outputConfidenceMasks: true }),
+    create(ObjectDetector, vision, MODELS.det, { runningMode: "VIDEO", scoreThreshold: CFG.DETECT_MIN_SCORE, categoryAllowlist: CFG.ALLOWED, maxResults: 3 }),
+    create(InteractiveSegmenter, vision, MODELS.magic, { outputCategoryMask: false, outputConfidenceMasks: true }),
   ]);
+  let nsfw = null;
+  try {
+    const mj = window.model, w64 = window.group1_shard1of1;
+    if (!mj || !w64) throw new Error("safety model files missing");
+    const bin = atob(w64), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    nsfw = await window.nsfwjs.load(tf.io.fromMemory({
+      modelTopology: mj.modelTopology, weightSpecs: mj.weightsManifest[0].weights, weightData: bytes.buffer,
+    }), { size: 224 });
+  } catch (e) { console.error("Safety model failed", e); }
+  return { hand, seg, det, magic, nsfw };
 }
 
-// ---------------- Camera ----------------
-let stream = null, facing = "user", running = false;
+// ---------- Hand cut-out (same method as the MetaHand Live app) ----------
+function convexHull(pts) {
+  pts = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const p of pts) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  up.pop(); lo.pop(); return lo.concat(up);
+}
+function morph(src, W, H, R, isMax) {
+  const t = new Uint8Array(W * H), o = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) { const r = y * W;
+    for (let x = 0; x < W; x++) { let m = isMax ? 0 : 255;
+      for (let k = -R; k <= R; k++) { const xx = x + k < 0 ? 0 : x + k >= W ? W - 1 : x + k; const v = src[r + xx]; if (isMax ? v > m : v < m) m = v; }
+      t[r + x] = m; } }
+  for (let x = 0; x < W; x++) for (let y = 0; y < H; y++) { let m = isMax ? 0 : 255;
+    for (let k = -R; k <= R; k++) { const yy = y + k < 0 ? 0 : y + k >= H ? H - 1 : y + k; const v = t[yy * W + x]; if (isMax ? v > m : v < m) m = v; }
+    o[y * W + x] = m; }
+  return o;
+}
+const overlaps = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
 
-async function startCamera() {
-  if (stream) stream.getTracks().forEach((t) => t.stop());
-  stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false,
-  });
-  video.srcObject = stream;
-  await video.play();
-  await new Promise((r) => (video.videoWidth ? r() : video.addEventListener("loadedmetadata", r, { once: true })));
-  sizeCanvases();
-  if (!running) { running = true; requestAnimationFrame(loop); }
+/* Hand cut-out: identical to the Netlify MetaHand Live build (mh-live-k7q3x9), plus the allowlisted held object. */
+function makeCutter(video, M, maxDim) {
+  const sc = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
+  const w = Math.round(video.videoWidth * sc), h = Math.round(video.videoHeight * sc);
+  const pack = canvas(w * 2, h), hull = canvas(w, h), mask = canvas(w, h), seg = canvas(w, h), frame = canvas(w, h), obj = canvas(w, h);
+  const pctx = pack.getContext("2d"), hctx = hull.getContext("2d"), mctx = mask.getContext("2d");
+  const sctx = seg.getContext("2d"), fctx = frame.getContext("2d"), octx = obj.getContext("2d");
+  const opt = { expand: 1.2, arm: true, bridge: true };
+  const sm = canvas(160, Math.max(1, Math.round(160 * h / w))), smx = sm.getContext("2d", { willReadFrequently: true });
+  let segImg = null, objImg = null, last = [], lastT = -1e9, lastTs = 0, n = 0;
+  let objBox = null, objScore = 0, objMiss = 0, objReady = false;
+
+  function ensureSeg(W, H) {
+    if (seg.width !== W || seg.height !== H) { seg.width = W; seg.height = H; segImg = null; }
+    if (!segImg) { segImg = sctx.createImageData(W, H); segImg.data.fill(255); }
+    return segImg.data;
+  }
+  function polygon(lm) {
+    const P = lm.map((p) => [p.x * w, p.y * h]);
+    const wr = P[0], md = P[9];
+    let dx = wr[0] - md[0], dy = wr[1] - md[1];
+    const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
+    const px = -dy, py = dx;
+    const hw = (Math.hypot(P[5][0] - P[17][0], P[5][1] - P[17][1]) || L * 0.8) * 0.55;
+    const pts = P.concat([[wr[0] + px * hw, wr[1] + py * hw], [wr[0] - px * hw, wr[1] - py * hw]]);
+    if (opt.arm) { const a = Math.max(w, h), aw = hw + a * 0.5; pts.push([wr[0] + dx * a + px * aw, wr[1] + dy * a + py * aw], [wr[0] + dx * a - px * aw, wr[1] + dy * a - py * aw]); }
+    let cx = 0, cy = 0; for (const p of P) { cx += p[0]; cy += p[1]; } cx /= P.length; cy /= P.length;
+    return convexHull(pts).map(([x, y]) => [cx + (x - cx) * opt.expand, cy + (y - cy) * opt.expand]);
+  }
+  function core(lm) {
+    const P = lm.map((p) => [p.x * w, p.y * h]);
+    const wr = P[0], md = P[9];
+    let dx = wr[0] - md[0], dy = wr[1] - md[1];
+    const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
+    const px = -dy, py = dx;
+    const hw = (Math.hypot(P[5][0] - P[17][0], P[5][1] - P[17][1]) || L * 0.8) * 0.38;
+    const pts = [0, 1, 5, 9, 13, 17].map((i) => P[i]).concat([[wr[0] + px * hw, wr[1] + py * hw], [wr[0] - px * hw, wr[1] - py * hw]]);
+    const a = L * 0.45; pts.push([wr[0] + dx * a + px * hw, wr[1] + dy * a + py * hw], [wr[0] + dx * a - px * hw, wr[1] + dy * a - py * hw]);
+    const hu = convexHull(pts);
+    let cx = 0, cy = 0; for (const p of hu) { cx += p[0]; cy += p[1]; } cx /= hu.length; cy /= hu.length;
+    return hu.map(([x, y]) => [cx + (x - cx) * 0.92, cy + (y - cy) * 0.92]);
+  }
+  function bridge(lm) {
+    const SW = sm.width, SH = sm.height;
+    smx.globalCompositeOperation = "copy"; smx.drawImage(mask, 0, 0, SW, SH);
+    const id = smx.getImageData(0, 0, SW, SH), d = id.data, A = new Uint8Array(SW * SH);
+    for (let i = 0; i < A.length; i++) A[i] = d[i * 4 + 3];
+    const P = lm.map((p) => [p.x * SW, p.y * SH]), L = Math.hypot(P[0][0] - P[9][0], P[0][1] - P[9][1]) || 1;
+    const R = Math.max(2, Math.round(L * 0.4));
+    const C = morph(morph(A, SW, SH, R, true), SW, SH, R, false);
+    for (let i = 0; i < C.length; i++) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 255; d[i * 4 + 3] = C[i]; }
+    smx.putImageData(id, 0, 0);
+    smx.globalCompositeOperation = "destination-in"; smx.drawImage(hull, 0, 0, SW, SH);
+    const dx = (P[0][0] - P[9][0]) / L, dy = (P[0][1] - P[9][1]) / L, px = -dy, py = dx, B = (SW + SH) * 3;
+    const bx = P[0][0] - dx * L * 0.15, by = P[0][1] - dy * L * 0.15;
+    smx.beginPath(); smx.moveTo(bx + px * B, by + py * B); smx.lineTo(bx - px * B, by - py * B);
+    smx.lineTo(bx - px * B + dx * B, by - py * B + dy * B); smx.lineTo(bx + px * B + dx * B, by + py * B + dy * B); smx.closePath();
+    smx.fillStyle = "#fff"; smx.fill();
+    smx.globalCompositeOperation = "source-over";
+    mctx.drawImage(sm, 0, 0, w, h);
+  }
+  function keepConnected(hands) {
+    const SW = sm.width, SH = sm.height;
+    smx.globalCompositeOperation = "copy"; smx.drawImage(mask, 0, 0, SW, SH);
+    const id = smx.getImageData(0, 0, SW, SH), d = id.data, N = SW * SH, seen = new Uint8Array(N), st = [];
+    for (const lm of hands) for (const k of [0, 5, 9, 13, 17]) {
+      const x = Math.min(SW - 1, Math.max(0, Math.round(lm[k].x * SW))), y = Math.min(SH - 1, Math.max(0, Math.round(lm[k].y * SH)));
+      const i = y * SW + x; if (!seen[i] && d[i * 4 + 3] > 100) { seen[i] = 1; st.push(i); }
+    }
+    while (st.length) {
+      const i = st.pop(), x = i % SW;
+      for (const j of [x > 0 ? i - 1 : -1, x < SW - 1 ? i + 1 : -1, i - SW, i + SW])
+        if (j >= 0 && j < N && !seen[j] && d[j * 4 + 3] > 100) { seen[j] = 1; st.push(j); }
+    }
+    const keep = morph(seen.map((v) => v * 255), SW, SH, 1, true);
+    for (let i = 0; i < N; i++) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 255; d[i * 4 + 3] = keep[i]; }
+    smx.putImageData(id, 0, 0); smx.globalCompositeOperation = "source-over";
+    mctx.globalCompositeOperation = "destination-in"; mctx.drawImage(sm, 0, 0, w, h);
+    mctx.globalCompositeOperation = "source-over";
+  }
+  // Allowlisted held object (sausage): detector box must overlap a hand; mask from interactive segmenter
+  function heldObject(hands, ts) {
+    if (!hands.length) { objBox = null; objReady = false; return; }
+    if (n % CFG.DETECT_EVERY === 0) {
+      const boxes = hands.map((lm) => { let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+        for (const p of lm) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+        const s = Math.max(x1 - x0, y1 - y0) * 0.35; return { x0: x0 - s, y0: y0 - s, x1: x1 + s, y1: y1 + s }; });
+      let best = null, bs = 0;
+      for (const d of M.det.detectForVideo(frame, ts).detections) {
+        const bb = d.boundingBox, s = d.categories[0]?.score ?? 0;
+        const b = { x0: bb.originX / w, y0: bb.originY / h, x1: (bb.originX + bb.width) / w, y1: (bb.originY + bb.height) / h };
+        if (boxes.some((hb) => overlaps(b, hb)) && s > bs) { best = b; bs = s; }
+      }
+      if (best) { objBox = best; objScore = bs; objMiss = 0; }
+      else if (++objMiss >= CFG.OBJ_MISS_LIMIT) { objBox = null; objReady = false; }
+    }
+    if (objBox && n % CFG.OBJMASK_EVERY === 0) {
+      M.magic.segment(frame, { keypoint: { x: (objBox.x0 + objBox.x1) / 2, y: (objBox.y0 + objBox.y1) / 2 } }, (r) => {
+        const m = r.confidenceMasks?.[0]; if (!m) return;
+        const a = m.getAsFloat32Array();
+        if (!objImg || objImg.width !== m.width || objImg.height !== m.height) { obj.width = m.width; obj.height = m.height; objImg = octx.createImageData(m.width, m.height); }
+        const d = objImg.data, bx0 = (objBox.x0 - 0.05) * m.width, bx1 = (objBox.x1 + 0.05) * m.width, by0 = (objBox.y0 - 0.05) * m.height, by1 = (objBox.y1 + 0.05) * m.height;
+        for (let i = 0; i < a.length; i++) {
+          const x = i % m.width, y = (i / m.width) | 0;
+          d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 255;
+          d[i * 4 + 3] = x >= bx0 && x <= bx1 && y >= by0 && y <= by1 && a[i] > 0.5 ? 255 : 0;
+        }
+        octx.putImageData(objImg, 0, 0); objReady = true;
+      });
+    }
+  }
+  function fillPoly(ctx, poly) { ctx.beginPath(); poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.fill(); }
+
+  function step() {
+    let ts = performance.now(); if (ts <= lastTs) ts = lastTs + 1; lastTs = ts; n++;
+    fctx.drawImage(video, 0, 0, w, h);                // one snapshot for tracking, mask and picture
+    const r = M.hand.detectForVideo(frame, ts);
+    if (r.landmarks && r.landmarks.length) { last = r.landmarks; lastT = ts; }
+    const hands = ts - lastT < 250 ? last : [];
+    hctx.clearRect(0, 0, w, h); hctx.fillStyle = "#fff";
+    for (const lm of hands) fillPoly(hctx, polygon(lm));
+    mctx.globalCompositeOperation = "source-over"; mctx.clearRect(0, 0, w, h);
+    heldObject(hands, ts);
+    if (hands.length) {
+      let any = false;
+      M.seg.segmentForVideo(frame, ts, (res) => {
+        const ms = res.confidenceMasks; if (!ms || ms.length < 4) return;
+        const a = ms[2].getAsFloat32Array(), b = ms[3].getAsFloat32Array(); // body skin + face skin
+        const d = ensureSeg(ms[2].width, ms[2].height);
+        for (let i = 0, k = a.length; i < k; i++) { const v = a[i] + b[i]; d[i * 4 + 3] = v > 1 ? 255 : v * 255; }
+        sctx.putImageData(segImg, 0, 0); mctx.drawImage(seg, 0, 0, w, h); any = true;
+      });
+      if (any) {
+        mctx.globalCompositeOperation = "destination-in"; mctx.drawImage(hull, 0, 0);
+        mctx.globalCompositeOperation = "source-over"; mctx.fillStyle = "#fff";
+        for (const lm of hands) fillPoly(mctx, core(lm));
+        if (objBox && objReady) mctx.drawImage(obj, 0, 0, w, h);
+        if (opt.bridge) for (const lm of hands) bridge(lm);
+        keepConnected(hands);
+      } else mctx.drawImage(hull, 0, 0);
+    }
+    pctx.drawImage(frame, 0, 0);
+    pctx.fillStyle = "#000"; pctx.fillRect(w, 0, w, h);
+    pctx.drawImage(mask, w, 0);
+    return { hands: hands.length, object: objBox ? objScore : 0 };
+  }
+  return { frame, mask, pack, step, w, h };
 }
 
-function sizeCanvases() {
-  const vw = video.videoWidth, vh = video.videoHeight;
-  work.width = CFG.WORK_W; work.height = Math.round(CFG.WORK_W * vh / vw);
-  maskC.width = work.width; maskC.height = work.height;
-  maskImg = mctx.createImageData(work.width, work.height);
-  const oh = Math.min(vh, CFG.OUT_MAX_H), ow = Math.round(oh * vw / vh);
-  for (const c of [out, cut, stage]) { c.width = ow; c.height = oh; }
-  document.querySelector(".stage").style.aspectRatio = `${ow}/${oh}`;
+/* Compositor: same shader as the Netlify build (5×5 softened mask edge, colour match to the scene, light grain).
+   Draws only the hand, with alpha, so the scene and safety gate stay in 2D. */
+const VS = `attribute vec2 p;varying vec2 v;void main(){v=p*0.5+0.5;gl_Position=vec4(p,0.0,1.0);}`;
+const FS = `precision mediump float;
+varying vec2 v;
+uniform sampler2D uPack;
+uniform vec3 uTint;
+uniform float uTexel,uSoft,uFlip,uGrain,uTime;
+void main(){
+  vec2 l = v;
+  if (uFlip > 0.5) l.x = 1.0 - l.x;
+  vec3 hc = texture2D(uPack, vec2(l.x*0.5, l.y)).rgb;
+  float m = 0.0;
+  for (int i=-2;i<=2;i++) for (int j=-2;j<=2;j++){
+    vec2 o = vec2(float(i), float(j)) * uTexel * uSoft;
+    m += texture2D(uPack, vec2(0.5 + clamp(l.x+o.x, 0.002, 0.998)*0.5, clamp(l.y+o.y, 0.0, 1.0))).r;
+  }
+  float a = smoothstep(0.3, 0.7, m/25.0);
+  hc = hc * uTint;
+  float n = fract(sin(dot(v*vec2(1234.5,987.6) + uTime, vec2(12.9898,78.233))) * 43758.5453) - 0.5;
+  hc += n * uGrain;
+  gl_FragColor = vec4(hc * a, a);
+}`;
+function makeCompositor() {
+  const cv = canvas(2, 2);
+  const gl = cv.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias: false, preserveDrawingBuffer: true });
+  if (!gl) throw new Error("WebGL is not available in this browser");
+  const sh = (t, src) => { const o = gl.createShader(t); gl.shaderSource(o, src); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  const pr = gl.createProgram();
+  gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(pr); gl.useProgram(pr);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const pl = gl.getAttribLocation(pr, "p"); gl.enableVertexAttribArray(pl); gl.vertexAttribPointer(pl, 2, gl.FLOAT, false, 0, 0);
+  const U = {}; ["uPack", "uTint", "uTexel", "uSoft", "uFlip", "uGrain", "uTime"].forEach((k) => (U[k] = gl.getUniformLocation(pr, k)));
+  const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.uniform1i(U.uPack, 0);
+  const st = { soft: 1.5, match: 0.5, grain: 0.02, tint: [1, 1, 1] };
+  const mc = canvas(64, 32), mcx = mc.getContext("2d", { willReadFrequently: true });
+  let lastMeasure = 0;
+  function measure(scene, pack) {   // nudge the hand's colour towards the scene's light, as on Netlify
+    mcx.drawImage(scene, 0, 0, 16, 16);
+    let d = mcx.getImageData(0, 0, 16, 16).data; const b = [1, 1, 1];
+    for (let i = 0; i < d.length; i += 4) { b[0] += d[i] / 256; b[1] += d[i + 1] / 256; b[2] += d[i + 2] / 256; }
+    mcx.drawImage(pack, 0, 0, 64, 32);
+    d = mcx.getImageData(0, 0, 64, 32).data; const hs = [0, 0, 0]; let ws = 0;
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+      const i = (y * 64 + x) * 4, m = d[(y * 64 + x + 32) * 4] / 255; if (m < 0.5) continue;
+      hs[0] += d[i] * m; hs[1] += d[i + 1] * m; hs[2] += d[i + 2] * m; ws += m;
+    }
+    if (ws < 3) return;
+    const hm = hs.map((x) => x / ws + 1), lum = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+    const bl = lum(b), hl = lum(hm);
+    for (let k = 0; k < 3; k++) {
+      const target = (bl / hl) * Math.sqrt((b[k] / bl) / (hm[k] / hl));
+      const tt = Math.min(1.8, Math.max(0.55, 1 + (target - 1) * st.match));
+      st.tint[k] += (tt - st.tint[k]) * 0.3;
+    }
+  }
+  function render(scene, pack, W, H, flip) {
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    gl.viewport(0, 0, W, H);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, pack);
+    const now = performance.now();
+    if (now - lastMeasure > 400) { lastMeasure = now; try { measure(scene, pack); } catch (e) {} }
+    gl.uniform3f(U.uTint, st.tint[0], st.tint[1], st.tint[2]);
+    gl.uniform1f(U.uTexel, 2 / pack.width); gl.uniform1f(U.uSoft, st.soft);
+    gl.uniform1f(U.uFlip, flip ? 1 : 0); gl.uniform1f(U.uGrain, st.grain);
+    gl.uniform1f(U.uTime, (now / 1000) % 100);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    return cv;
+  }
+  return { render };
 }
 
-// ---------------- Background ----------------
-let bgImg = null;
-$("bgfile").addEventListener("change", (e) => {
+// ---------- Hand owner view ----------
+const out = $("out"), ox = out.getContext("2d");
+let comp = null;
+const gateC = canvas(224, 224), gx = gateC.getContext("2d");
+const hVideo = $("hVideo"), remote = $("hRemote");
+let cutter = null, running = false, bgImg = null, peer = null, remoteOk = false;
+const gate = { ok: false, score: null, until: 0, busy: false, last: 0 };
+let fps = 0, fpsN = 0, fpsT = performance.now(), info = { hands: 0, object: 0 };
+
+$("hBg").addEventListener("change", (e) => {
   const f = e.target.files?.[0]; if (!f) return;
   const img = new Image(); img.onload = () => (bgImg = img); img.src = URL.createObjectURL(f);
 });
-function drawBackground(ctx, w, h) {
-  if (bgImg) {
-    const s = Math.max(w / bgImg.width, h / bgImg.height);
-    const bw = bgImg.width * s, bh = bgImg.height * s;
-    ctx.drawImage(bgImg, (w - bw) / 2, (h - bh) / 2, bw, bh);
-  } else {
-    const g = ctx.createLinearGradient(0, 0, 0, h);
-    g.addColorStop(0, "#8fb3d9"); g.addColorStop(0.38, "#cfe0ef");
-    g.addColorStop(0.40, "#2c5c7a"); g.addColorStop(0.62, "#3f7f8f");
-    g.addColorStop(0.70, "#e8eef0"); g.addColorStop(1, "#cbb89a");
-    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+
+function drawCover(ctx, src, sw, sh, W, H) {
+  const s = Math.max(W / sw, H / sh), dw = sw * s, dh = sh * s;
+  ctx.drawImage(src, (W - dw) / 2, (H - dh) / 2, dw, dh);
+}
+function drawScene(W, H) {
+  remoteOk = remote.readyState >= 2 && remote.videoWidth > 0;
+  if (remoteOk) drawCover(ox, remote, remote.videoWidth, remote.videoHeight, W, H);
+  else if (bgImg) drawCover(ox, bgImg, bgImg.width, bgImg.height, W, H);
+  else {
+    const g = ox.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#8fb3d9"); g.addColorStop(0.38, "#cfe0ef"); g.addColorStop(0.40, "#2c5c7a");
+    g.addColorStop(0.62, "#3f7f8f"); g.addColorStop(0.70, "#e8eef0"); g.addColorStop(1, "#cbb89a");
+    ox.fillStyle = g; ox.fillRect(0, 0, W, H);
   }
 }
 
-// ---------------- Geometry helpers (normalized 0..1) ----------------
-function landmarkBox(lm, pad) {
-  let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
-  for (const p of lm) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
-  const s = Math.max(x1 - x0, y1 - y0) * pad;
-  return { x0: x0 - s, y0: y0 - s, x1: x1 + s, y1: y1 + s };
+async function gateCheck(now) {
+  if (!models.nsfw) { gate.ok = false; return; }
+  if (gate.busy || now - gate.last < CFG.NSFW_EVERY_MS) return;
+  gate.busy = true; gate.last = now;
+  gx.drawImage(out, 0, 0, 224, 224);
+  try {
+    const p = await models.nsfw.classify(gateC);
+    const s = p.filter((q) => CFG.NSFW_CLASSES.includes(q.className)).reduce((a, q) => a + q.probability, 0);
+    gate.score = s;
+    if (s >= CFG.NSFW_BLOCK) gate.until = performance.now() + CFG.NSFW_HOLD_MS;
+    gate.ok = performance.now() >= gate.until;
+  } catch (e) { console.error(e); gate.ok = false; }
+  gate.busy = false;
 }
-const padBox = (b, pad) => {
-  const px = (b.x1 - b.x0) * pad, py = (b.y1 - b.y0) * pad;
-  return { x0: b.x0 - px, y0: b.y0 - py, x1: b.x1 + px, y1: b.y1 + py };
-};
-const overlaps = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
-const toPx = (b, W, H) => ({
-  x0: Math.max(0, Math.floor(b.x0 * W)), y0: Math.max(0, Math.floor(b.y0 * H)),
-  x1: Math.min(W, Math.ceil(b.x1 * W)),  y1: Math.min(H, Math.ceil(b.y1 * H)),
-});
 
-// ---------------- State ----------------
-let maskImg = null, frame = 0, lastTs = -1;
-let skin = null, skinW = 0, skinH = 0;
-let objBox = null, objScore = 0, objMiss = 0;
-let objMask = null, objMaskW = 0, objMaskH = 0;
-let handCount = 0, fps = 0, lastFpsT = performance.now(), fpsFrames = 0;
-// ---------------- Main loop ----------------
+function render() {
+  if (!cutter) return;
+  info = cutter.step();
+  const W = out.width, H = out.height, mirror = $("hCam").value === "user";
+  // Composite: scene, then this phone's own hand on top (no network delay on the hand)
+  drawScene(W, H);
+  if ($("hDebug").checked) {
+    ox.globalAlpha = 0.6; ox.drawImage(cutter.frame, 0, 0, W, H);
+    ox.globalAlpha = 0.45; ox.drawImage(cutter.mask, 0, 0, W, H); ox.globalAlpha = 1;
+  } else {
+    if (!comp) comp = makeCompositor();
+    ox.drawImage(comp.render(out, cutter.pack, W, H, mirror), 0, 0, W, H);
+  }
+  // Safety gate checks what is on screen; withheld frames are covered
+  gateCheck(performance.now());
+  if (!gate.ok) {
+    drawScene(W, H);
+    ox.fillStyle = "rgba(0,0,0,.55)"; ox.fillRect(0, 0, W, H);
+    ox.fillStyle = "#fff"; ox.textAlign = "center"; ox.font = `${Math.round(H / 30)}px -apple-system, sans-serif`;
+    ox.fillText(models.nsfw ? (gate.score == null ? "Starting safety check…" : "Frame withheld by safety check") : "Safety model not loaded – output off", W / 2, H / 2);
+  }
+  fpsN++; const now = performance.now();
+  if (now - fpsT > 1000) { fps = fpsN * 1000 / (now - fpsT); fpsN = 0; fpsT = now; }
+  const b = $("badge");
+  b.textContent = !gate.ok ? "withheld" : info.object ? `hand + ${CFG.ALLOWED[0]}` : info.hands ? "hand" : "no hand";
+  b.style.color = !gate.ok ? "var(--bad)" : info.object ? "var(--ok)" : "var(--text)";
+  $("hStats").textContent =
+    `fps ${fps.toFixed(1)} · hands ${info.hands} · object ${info.object ? info.object.toFixed(2) : "–"} · cut ${cutter.w}×${cutter.h}\n` +
+    `scene ${remoteOk ? remote.videoWidth + "×" + remote.videoHeight + " (live)" : bgImg ? "image" : "default"} · ` +
+    `safety ${gate.score == null ? "pending" : gate.score.toFixed(3)} ${gate.ok ? "pass" : "withheld"}`;
+}
+let lastVT = -1;
 function loop() {
   if (!running) return;
-  const ts = performance.now();
-  if (video.readyState >= 2 && ts > lastTs) { lastTs = ts; process(ts); }
+  // render once per new camera frame
+  if (hVideo.readyState >= 2 && hVideo.currentTime !== lastVT) { lastVT = hVideo.currentTime; render(); }
   requestAnimationFrame(loop);
 }
 
-function process(ts) {
-  const W = work.width, H = work.height;
-  wctx.drawImage(video, 0, 0, W, H);
-  frame++;
-  if (depthMode.checked && depthEstimator && !depthBusy && frame % 10 === 0) updateDepth();
+async function startHand() {
+  $("hStart").disabled = true;
+  try {
+    say("Starting camera…");
+    await openCamera(hVideo, $("hCam").value, 640, 480);   // same camera request as the Netlify build
+    const vw = hVideo.videoWidth, vh = hVideo.videoHeight, oh = Math.min(960, vh), ow = Math.round(oh * vw / vh);
+    out.width = ow; out.height = oh;
+    cutter = makeCutter(hVideo, models, +$("hDetail").value);
+    if (!running) { running = true; loop(); }
+    say(peer ? "Hand running. Waiting for the scene camera to connect…" : "Hand running.", "ok");
+    $("hStart").textContent = "Restart"; $("hStart").disabled = false;
+  } catch (e) { say("Camera error: " + e.message, "bad"); $("hStart").disabled = false; }
+}
+$("hStart").addEventListener("click", startHand);
+$("hCam").addEventListener("change", () => { if (cutter) startHand(); });
+$("hDetail").addEventListener("change", () => { if (cutter) cutter = makeCutter(hVideo, models, +$("hDetail").value); });
 
-  // 1. Hands
-  const hr = hands.detectForVideo(work, ts);
-  handCount = hr.landmarks.length;
-  const handBoxes = hr.landmarks.map((lm) => landmarkBox(lm, CFG.HAND_PAD));
-
-  // 2. Skin mask
-  skinSeg.segmentForVideo(work, ts, (r) => {
-    const m = r.categoryMask; if (!m) return;
-    skin = m.getAsUint8Array().slice(); skinW = m.width; skinH = m.height;
+function hostCode() {
+  if (!window.Peer) { $("codeBox").textContent = "offline"; return; }
+  const code = Math.random().toString(36).slice(2, 8);
+  $("codeBox").textContent = code;
+  peer = new Peer(PREFIX + code, PEER_OPTS); keepAlive(peer, say);
+  peer.on("call", (call) => {
+    call.answer(); say("Scene camera connecting…");
+    watchIce(call, say, "Connected: your hand is shown in the scene camera's view.");
+    call.on("stream", (s) => { remote.srcObject = s; remote.play().catch(() => {}); });
+    call.on("close", () => { remote.srcObject = null; say("Scene camera disconnected. Using the background.", "bad"); });
+    call.on("error", (e) => say("Call error: " + (e.type || e.message || e), "bad"));
   });
-
-  // 3. Allowlisted object that overlaps a hand
-  if (frame % CFG.DETECT_EVERY === 0) {
-    const dr = detector.detectForVideo(work, ts);
-    let best = null, bestScore = 0;
-    for (const d of dr.detections) {
-      const bb = d.boundingBox, sc = d.categories[0]?.score ?? 0;
-      const b = { x0: bb.originX / W, y0: bb.originY / H, x1: (bb.originX + bb.width) / W, y1: (bb.originY + bb.height) / H };
-      if (handBoxes.some((h) => overlaps(b, h)) && sc > bestScore) { best = b; bestScore = sc; }
-    }
-    if (best) { objBox = best; objScore = bestScore; objMiss = 0; }
-    else if (++objMiss >= CFG.OBJ_MISS_LIMIT) { objBox = null; objMask = null; objScore = 0; }
-  }
-
-  // 4. Object mask seeded at the detection centre
-  if (objBox && frame % CFG.OBJMASK_EVERY === 0) {
-    const kp = { x: (objBox.x0 + objBox.x1) / 2, y: (objBox.y0 + objBox.y1) / 2 };
-    objSeg.segment(work, { keypoint: kp }, (r) => {
-      const m = r.confidenceMasks?.[0]; if (!m) return;
-      objMask = m.getAsFloat32Array().slice(); objMaskW = m.width; objMaskH = m.height;
-    });
-  }
-
-  // 5. Build alpha mask at work resolution
-  const d = maskImg.data; d.fill(0);
-  if (handCount && skin && !(depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200)) {
-    for (const hb of handBoxes) {
-      const p = toPx(hb, W, H);
-      for (let y = p.y0; y < p.y1; y++) {
-        const sy = Math.floor(y * skinH / H) * skinW;
-        for (let x = p.x0; x < p.x1; x++) {
-          if (skin[sy + Math.floor(x * skinW / W)] === CFG.SKIN_CAT) {
-            const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255;
-          }
-        }
-      }
-    }
-    if (objBox && objMask) {
-      const p = toPx(padBox(objBox, CFG.OBJ_PAD), W, H);
-      for (let y = p.y0; y < p.y1; y++) {
-        const oy = Math.floor(y * objMaskH / H) * objMaskW;
-        for (let x = p.x0; x < p.x1; x++) {
-          if (objMask[oy + Math.floor(x * objMaskW / W)] > 0.5) {
-            const i = (y * W + x) * 4; d[i] = 255; d[i + 1] = 160; d[i + 3] = 255;
-          }
-        }
-      }
-    }
-  }
-  if (depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200 && skin) {
-    // Hybrid mask: skin semantics remove non-skin objects; relative depth keeps only the nearest skin pixels.
-    const d = maskImg.data;
-    const nearFraction = Number(depthNear.value) / 100;
-    const cutoff = depthMap.cutoff;
-    for (let y = 0; y < H; y++) {
-      const sy = Math.min(skinH - 1, Math.floor(y * skinH / H)) * skinW;
-      const dy = Math.min(depthH - 1, Math.floor(y * depthH / H)) * depthW;
-      for (let x = 0; x < W; x++) {
-        if (skin[sy + Math.min(skinW - 1, Math.floor(x * skinW / W))] !== CFG.SKIN_CAT) continue;
-        const z = depthMap.data[dy + Math.min(depthW - 1, Math.floor(x * depthW / W))];
-        if (z >= cutoff) { const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255; }
-      }
-    }
-  }
-  mctx.putImageData(maskImg, 0, 0);
-
-  // 6. Composite into the stage (the frame that would be sent)
-  const OW = stage.width, OH = stage.height, mirror = facing === "user";
-  if (debugChk.checked) {
-    sctx.drawImage(video, 0, 0, OW, OH);
-    sctx.globalAlpha = 0.5; sctx.drawImage(maskC, 0, 0, OW, OH); sctx.globalAlpha = 1;
-  } else {
-    cctx.globalCompositeOperation = "copy";
-    cctx.drawImage(video, 0, 0, OW, OH);
-    cctx.globalCompositeOperation = "destination-in";
-    cctx.filter = `blur(${CFG.FEATHER_PX}px)`;
-    cctx.drawImage(maskC, 0, 0, OW, OH);
-    cctx.filter = "none";
-    cctx.globalCompositeOperation = "source-over";
-    drawBackground(sctx, OW, OH);
-    sctx.drawImage(cut, 0, 0);
-  }
-
-  // 7. Display the composited frame directly; no safety classifier or output gate.
-  octx.save();
-  if (mirror) { octx.translate(OW, 0); octx.scale(-1, 1); }
-  octx.drawImage(stage, 0, 0);
-  octx.restore();
-
-  // Stats
-  fpsFrames++;
-  if (ts - lastFpsT > 1000) { fps = fpsFrames * 1000 / (ts - lastFpsT); fpsFrames = 0; lastFpsT = ts; }
-  badge.textContent = objBox ? `hand + ${CFG.ALLOWED[0]}` : handCount ? "hand" : "no hand";
-  badge.style.color = objBox ? "var(--ok)" : "var(--text)";
-  statsEl.textContent =
-    `fps ${fps.toFixed(1)}  ·  hands ${handCount}  ·  object ${objBox ? objScore.toFixed(2) : "–"}\n` +
-    `mask ${depthMode.checked ? (depthMap && ts - depthUpdatedAt < 2200 ? "depth + skin" : "depth warming up") : "original skin + hand ROI"}\n` +
-    `work ${W}×${H}  ·  out ${OW}×${OH}  ·  allowlist: ${CFG.ALLOWED.join(", ")}`;
+  peer.on("error", (e) => say("Connection error: " + e.type, "bad"));
 }
 
-// ---------------- Experimental depth + skin mode ----------------
-async function enableDepthMode() {
-  depthControls.hidden = !depthMode.checked;
-  if (!depthMode.checked) return;
-  if (depthEstimator) { setStatus("Depth + skin mode ready", "ok"); return; }
-  depthMode.disabled = true;
-  setStatus("Loading depth model (first load is about 50–100 MB)…");
+async function initHand() {
+  if (handInit) return; handInit = true;
+  hostCode();
   try {
-    const { pipeline, env } = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2");
-    env.allowLocalModels = false;
-    try {
-      depthEstimator = await pipeline("depth-estimation", "onnx-community/depth-anything-v2-small", { device: "webgpu", dtype: "fp16" });
-    } catch (gpuError) {
-      console.warn("WebGPU depth init failed; trying WASM", gpuError);
-      depthEstimator = await pipeline("depth-estimation", "onnx-community/depth-anything-v2-small", { dtype: "q8" });
-    }
-    setStatus("Depth + skin mode ready. Adjust the nearest-foreground threshold below.", "ok");
-  } catch (e) {
-    console.error("Depth model failed", e);
-    depthMode.checked = false;
-    depthControls.hidden = true;
-    setStatus("Depth model failed to load; original segmentation remains active: " + e.message, "bad");
-  } finally { depthMode.disabled = false; }
-}
-function applyDepthCutoff() {
-  if (!depthMap?.sortedSample?.length) return;
-  const percentile = Math.max(0, Math.min(99, 100 - Number(depthNear.value)));
-  depthMap.cutoff = depthMap.sortedSample[Math.floor((percentile / 100) * (depthMap.sortedSample.length - 1))] ?? 0;
-  depthUpdatedAt = performance.now();
-}
-async function updateDepth() {
-  if (!depthEstimator || depthBusy || !work.width) return;
-  depthBusy = true;
-  try {
-    depthInput.width = work.width; depthInput.height = work.height;
-    depthInputCtx.drawImage(work, 0, 0);
-    const result = await depthEstimator(depthInput);
-    const t = result.predicted_depth;
-    if (t?.data?.length && t.dims?.length >= 2) {
-      const h = t.dims[t.dims.length - 2], w = t.dims[t.dims.length - 1];
-      const data = Float32Array.from(t.data);
-      // Estimate a robust near-depth cutoff from a sampled percentile to ignore outliers.
-      const sample = [];
-      for (let i = 0; i < data.length; i += 9) if (Number.isFinite(data[i])) sample.push(data[i]);
-      sample.sort((a, b) => a - b);
-      depthMap = { data, width: w, height: h, sortedSample: sample };
-      depthW = w; depthH = h; applyDepthCutoff();
-    }
-  } catch (e) { console.warn("Depth frame failed", e); }
-  finally { depthBusy = false; }
-}
-depthMode.addEventListener("change", enableDepthMode);
-depthNear.addEventListener("input", () => {
-  depthNearValue.textContent = depthNear.value + "%";
-  applyDepthCutoff();
-});
-
-// ---------------- Wire up ----------------
-startBtn.onclick = async () => {
-  try { await startCamera(); flipBtn.disabled = false; startBtn.textContent = "Restart camera"; }
-  catch (e) { setStatus("Camera error: " + e.message, "bad"); }
-};
-flipBtn.onclick = async () => {
-  facing = facing === "user" ? "environment" : "user";
-  try { await startCamera(); } catch (e) { setStatus("Camera error: " + e.message, "bad"); }
-};
-
-try {
-  await loadModels();
-  setStatus("Models ready – tap Start camera", "ok");
-  startBtn.disabled = false;
-} catch (e) {
-  console.error(e);
-  setStatus("Model load failed: " + e.message, "bad");
+    models = await loadModels();
+    $("hStart").disabled = false;
+    say(models.nsfw ? "Ready. Tap Start, then enter the code on the scene device." : "Vision ready, but safety model failed to load – output will stay off.", models.nsfw ? "ok" : "bad");
+  } catch (e) { console.error(e); say("Model load failed: " + e.message, "bad"); handInit = false; }
 }
 </script>
 </body>
