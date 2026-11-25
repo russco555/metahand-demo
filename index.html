@@ -92,9 +92,9 @@ import { FilesetResolver, HandLandmarker, ImageSegmenter, ObjectDetector, Intera
 // ================= Config =================
 const CFG = {
   ALLOWED: ["hot dog"],      // held objects that may stay in the hand (COCO "hot dog" stands in for sausage)
-  DETECT_MIN_SCORE: 0.3, DETECT_EVERY: 3, OBJMASK_EVERY: 4, OBJ_MISS_LIMIT: 3,
-  EXPAND: 1.2, ARM: true, BRIDGE: true, FEATHER_PX: 2,
-  NSFW_EVERY_MS: 400, NSFW_CLASSES: ["Porn", "Hentai"], NSFW_BLOCK: 0.55, NSFW_HOLD_MS: 2000,
+  DETECT_MIN_SCORE: 0.3, DETECT_EVERY: 8, OBJMASK_EVERY: 4, OBJ_MISS_LIMIT: 3,
+  EXPAND: 1.2, ARM: true, BRIDGE: true, FEATHER_PX: 1,
+  NSFW_EVERY_MS: 600, NSFW_CLASSES: ["Porn", "Hentai"], NSFW_BLOCK: 0.55, NSFW_HOLD_MS: 2000,
 };
 const PREFIX = "metahand-scene-";
 /* Mobile data usually needs a TURN relay. Put your own details here (Metered, Twilio, Cloudflare…). */
@@ -339,7 +339,7 @@ function makeCutter(video, M, maxDim) {
         if (seg.width !== ms[2].width || seg.height !== ms[2].height) { seg.width = ms[2].width; seg.height = ms[2].height; segImg = null; }
         if (!segImg) { segImg = sctx.createImageData(seg.width, seg.height); segImg.data.fill(255); }
         const d = segImg.data;
-        for (let i = 0; i < a.length; i++) { const v = a[i] + b[i]; d[i * 4 + 3] = v > 1 ? 255 : v * 255; }
+        for (let i = 0; i < a.length; i++) { const t = Math.min(1, Math.max(0, (a[i] + b[i] - 0.2) / 0.4)); d[i * 4 + 3] = 255 * t * t * (3 - 2 * t); }
         sctx.putImageData(segImg, 0, 0); mctx.drawImage(seg, 0, 0, w, h); any = true;
       });
       if (any) {
@@ -359,6 +359,7 @@ function makeCutter(video, M, maxDim) {
 // ---------- Hand owner view ----------
 const out = $("out"), ox = out.getContext("2d");
 const cut = canvas(), cx = cut.getContext("2d");
+const soft = canvas(), sx = soft.getContext("2d");
 const gateC = canvas(224, 224), gx = gateC.getContext("2d");
 const hVideo = $("hVideo"), remote = $("hRemote");
 let cutter = null, running = false, bgImg = null, peer = null, remoteOk = false;
@@ -411,10 +412,13 @@ function render() {
     ox.globalAlpha = 0.6; ox.drawImage(cutter.frame, 0, 0, W, H);
     ox.globalAlpha = 0.45; ox.drawImage(cutter.mask, 0, 0, W, H); ox.globalAlpha = 1;
   } else {
-    cut.width = W; cut.height = H;
+    if (cut.width !== W || cut.height !== H) { cut.width = W; cut.height = H; }
     cx.globalCompositeOperation = "copy"; cx.drawImage(cutter.frame, 0, 0, W, H);
-    cx.globalCompositeOperation = "destination-in"; cx.filter = `blur(${CFG.FEATHER_PX}px)`;
-    cx.drawImage(cutter.mask, 0, 0, W, H); cx.filter = "none"; cx.globalCompositeOperation = "source-over";
+    if (soft.width !== cutter.w || soft.height !== cutter.h) { soft.width = cutter.w; soft.height = cutter.h; }
+    sx.clearRect(0, 0, soft.width, soft.height); sx.filter = `blur(${CFG.FEATHER_PX}px)`;
+    sx.drawImage(cutter.mask, 0, 0); sx.filter = "none";
+    cx.globalCompositeOperation = "destination-in"; cx.imageSmoothingQuality = "high";
+    cx.drawImage(soft, 0, 0, W, H); cx.globalCompositeOperation = "source-over";
     ox.save(); if (mirror) { ox.translate(W, 0); ox.scale(-1, 1); }
     ox.drawImage(cut, 0, 0); ox.restore();
   }
@@ -449,7 +453,7 @@ async function startHand() {
   try {
     say("Starting camera…");
     await openCamera(hVideo, $("hCam").value);
-    const vw = hVideo.videoWidth, vh = hVideo.videoHeight, oh = Math.min(1280, Math.max(vh, 960)), ow = Math.round(oh * vw / vh);
+    const vw = hVideo.videoWidth, vh = hVideo.videoHeight, oh = Math.min(960, vh), ow = Math.round(oh * vw / vh);
     out.width = ow; out.height = oh;
     cutter = makeCutter(hVideo, models, +$("hDetail").value);
     if (!running) { running = true; loop(); }
