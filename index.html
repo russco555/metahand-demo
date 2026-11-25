@@ -74,7 +74,11 @@ const CFG = {
   HAND_PAD: 0.35,         // pad hand bbox by this fraction of its size
   OBJ_PAD: 0.10,
   SKIN_CAT: 2,            // selfie_multiclass: 2 = body-skin
-  FEATHER_PX: 2,
+  SKIN_MIN: 0.35,         // skin confidence needed near the hand outline
+  BONE_W: 0.30,           // finger thickness, as a fraction of palm size
+  EDGE_W: 1.9,            // how far beyond the core outline skin may extend
+  SMOOTH: 0.45,           // weight of previous mask (reduces flicker)
+  FEATHER_PX: 3,
   // Safety gate
   NSFW_EVERY_MS: 400,
   NSFW_CLASSES: ["Porn", "Hentai"],
@@ -106,6 +110,9 @@ const [maskC, mctx]  = mk();            // alpha mask at work res
 const [cut, cctx]    = mk();            // camera cut-out at output res
 const [stage, sctx]  = mk();            // composited frame (what would be sent)
 const [gateC, gctx]  = mk(224, 224);    // safety gate input
+const [coreC, coreX] = mk(1, 1, true);  // hand skeleton, solid core
+const [edgeC, edgeX] = mk(1, 1, true);  // wider skeleton, where skin may refine the edge
+let prevAlpha = null;
 
 // ---------------- Models ----------------
 let hands, detector, skinSeg, objSeg, nsfwModel = null;
@@ -126,7 +133,7 @@ async function loadModels() {
       runningMode: "VIDEO", scoreThreshold: CFG.DETECT_MIN_SCORE,
       categoryAllowlist: CFG.ALLOWED, maxResults: 3,
     }),
-    create(ImageSegmenter, vision, M.seg, { runningMode: "VIDEO", outputCategoryMask: true, outputConfidenceMasks: false }),
+    create(ImageSegmenter, vision, M.seg, { runningMode: "VIDEO", outputCategoryMask: false, outputConfidenceMasks: true }),
     create(InteractiveSegmenter, vision, M.magic, { outputCategoryMask: false, outputConfidenceMasks: true }),
   ]);
   try {
@@ -165,6 +172,8 @@ function sizeCanvases() {
   const vw = video.videoWidth, vh = video.videoHeight;
   work.width = CFG.WORK_W; work.height = Math.round(CFG.WORK_W * vh / vw);
   maskC.width = work.width; maskC.height = work.height;
+  for (const c of [coreC, edgeC]) { c.width = work.width; c.height = work.height; }
+  prevAlpha = new Float32Array(work.width * work.height);
   maskImg = mctx.createImageData(work.width, work.height);
   const oh = Math.min(vh, CFG.OUT_MAX_H), ow = Math.round(oh * vw / vh);
   for (const c of [out, cut, stage]) { c.width = ow; c.height = oh; }
@@ -235,6 +244,26 @@ async function gateCheck(now) {
   gate.checking = false;
 }
 
+// ---------------- Hand skeleton masks ----------------
+const PALM = [0, 1, 2, 5, 9, 13, 17];
+function drawSkeletons(hands_, W, H) {
+  for (const [x, w] of [[coreX, 1], [edgeX, CFG.EDGE_W]]) {
+    x.clearRect(0, 0, W, H);
+    x.strokeStyle = x.fillStyle = "#fff"; x.lineCap = x.lineJoin = "round";
+    for (const lm of hands_) {
+      const P = lm.map((p) => [p.x * W, p.y * H]);
+      const palm = Math.hypot(P[0][0] - P[9][0], P[0][1] - P[9][1]);
+      x.lineWidth = palm * CFG.BONE_W * w;
+      x.beginPath();
+      PALM.forEach((j, n) => (n ? x.lineTo(...P[j]) : x.moveTo(...P[j])));
+      x.closePath(); x.fill(); x.stroke();
+      x.beginPath();
+      for (const c of HandLandmarker.HAND_CONNECTIONS) { x.moveTo(...P[c.start]); x.lineTo(...P[c.end]); }
+      x.stroke();
+    }
+  }
+}
+
 // ---------------- Main loop ----------------
 function loop() {
   if (!running) return;
@@ -255,8 +284,8 @@ function process(ts) {
 
   // 2. Skin mask
   skinSeg.segmentForVideo(work, ts, (r) => {
-    const m = r.categoryMask; if (!m) return;
-    skin = m.getAsUint8Array().slice(); skinW = m.width; skinH = m.height;
+    const m = r.confidenceMasks?.[CFG.SKIN_CAT]; if (!m) return;
+    skin = m.getAsFloat32Array().slice(); skinW = m.width; skinH = m.height;
   });
 
   // 3. Allowlisted object that overlaps a hand
@@ -283,16 +312,21 @@ function process(ts) {
 
   // 5. Build alpha mask at work resolution
   const d = maskImg.data; d.fill(0);
-  if (handCount && skin) {
-    for (const hb of handBoxes) {
-      const p = toPx(hb, W, H);
-      for (let y = p.y0; y < p.y1; y++) {
-        const sy = Math.floor(y * skinH / H) * skinW;
-        for (let x = p.x0; x < p.x1; x++) {
-          if (skin[sy + Math.floor(x * skinW / W)] === CFG.SKIN_CAT) {
-            const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255;
-          }
+  drawSkeletons(hr.landmarks, W, H);
+  const core = coreX.getImageData(0, 0, W, H).data, edge = edgeX.getImageData(0, 0, W, H).data;
+  const alpha = new Float32Array(W * H);
+  if (handCount) {
+    for (let y = 0; y < H; y++) {
+      const sy = skin ? Math.floor(y * skinH / H) * skinW : 0;
+      for (let x = 0; x < W; x++) {
+        const k = y * W + x, i = k * 4;
+        if (!edge[i + 3]) continue;
+        let a = core[i + 3] / 255;
+        if (skin) {
+          const c = skin[sy + Math.floor(x * skinW / W)];
+          if (c > CFG.SKIN_MIN) a = Math.max(a, Math.min(1, (c - CFG.SKIN_MIN) / (1 - CFG.SKIN_MIN) * 1.6));
         }
+        alpha[k] = a;
       }
     }
     if (objBox && objMask) {
@@ -300,12 +334,15 @@ function process(ts) {
       for (let y = p.y0; y < p.y1; y++) {
         const oy = Math.floor(y * objMaskH / H) * objMaskW;
         for (let x = p.x0; x < p.x1; x++) {
-          if (objMask[oy + Math.floor(x * objMaskW / W)] > 0.5) {
-            const i = (y * W + x) * 4; d[i] = 255; d[i + 1] = 160; d[i + 3] = 255;
-          }
+          if (objMask[oy + Math.floor(x * objMaskW / W)] > 0.5) alpha[y * W + x] = 1;
         }
       }
     }
+  }
+  for (let k = 0; k < alpha.length; k++) {
+    const a = prevAlpha[k] * CFG.SMOOTH + alpha[k] * (1 - CFG.SMOOTH);
+    prevAlpha[k] = a;
+    const i = k * 4; d[i + 1] = 255; d[i + 3] = a > 0.08 ? Math.round(a * 255) : 0;
   }
   mctx.putImageData(maskImg, 0, 0);
 
