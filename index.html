@@ -280,7 +280,7 @@ function process(ts) {
 
   // 5. Build alpha mask at work resolution
   const d = maskImg.data; d.fill(0);
-  if (handCount && skin) {
+  if (handCount && skin && !(depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200)) {
     for (const hb of handBoxes) {
       const p = toPx(hb, W, H);
       for (let y = p.y0; y < p.y1; y++) {
@@ -390,6 +390,12 @@ async function enableDepthMode() {
     setStatus("Depth model failed to load; original segmentation remains active: " + e.message, "bad");
   } finally { depthMode.disabled = false; }
 }
+function applyDepthCutoff() {
+  if (!depthMap?.sortedSample?.length) return;
+  const percentile = Math.max(0, Math.min(99, 100 - Number(depthNear.value)));
+  depthMap.cutoff = depthMap.sortedSample[Math.floor((percentile / 100) * (depthMap.sortedSample.length - 1))] ?? 0;
+  depthUpdatedAt = performance.now();
+}
 async function updateDepth() {
   if (!depthEstimator || depthBusy || !work.width) return;
   depthBusy = true;
@@ -405,10 +411,8 @@ async function updateDepth() {
       const sample = [];
       for (let i = 0; i < data.length; i += 9) if (Number.isFinite(data[i])) sample.push(data[i]);
       sample.sort((a, b) => a - b);
-      const percentile = Math.max(0, Math.min(99, 100 - Number(depthNear.value)));
-      const cutoff = sample[Math.floor((percentile / 100) * (sample.length - 1))] ?? 0;
-      depthMap = { data, width: w, height: h, cutoff };
-      depthW = w; depthH = h; depthUpdatedAt = performance.now();
+      depthMap = { data, width: w, height: h, sortedSample: sample };
+      depthW = w; depthH = h; applyDepthCutoff();
     }
   } catch (e) { console.warn("Depth frame failed", e); }
   finally { depthBusy = false; }
@@ -416,8 +420,7 @@ async function updateDepth() {
 depthMode.addEventListener("change", enableDepthMode);
 depthNear.addEventListener("input", () => {
   depthNearValue.textContent = depthNear.value + "%";
-  // The cutoff is recalculated on the next depth inference.
-  if (depthMap) depthUpdatedAt = 0;
+  applyDepthCutoff();
 });
 
 // ---------------- Wire up ----------------
