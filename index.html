@@ -66,7 +66,7 @@
     </div>
     <div class="row">
       <select id="hCam"><option value="environment">Rear camera (hand behind phone)</option><option value="user">Front camera</option></select>
-      <select id="hDetail"><option value="384">Smooth</option><option value="512" selected>Balanced</option><option value="640">Sharp</option></select>
+      <select id="hDetail"><option value="384">Smooth</option><option value="512">Balanced</option><option value="640" selected>Sharp (Netlify)</option></select>
     </div>
     <div class="row"><label class="chk"><input type="checkbox" id="hDebug"> Show mask overlay</label></div>
     <div class="status" id="hStatus">Loading models…</div>
@@ -93,11 +93,6 @@ import { FilesetResolver, HandLandmarker, ImageSegmenter, ObjectDetector, Intera
 const CFG = {
   ALLOWED: ["hot dog"],      // held objects that may stay in the hand (COCO "hot dog" stands in for sausage)
   DETECT_MIN_SCORE: 0.3, DETECT_EVERY: 8, OBJMASK_EVERY: 4, OBJ_MISS_LIMIT: 3,
-  EXPAND: 1.2, ARM: true, BRIDGE: true,
-  HI_DIM: 960,        // picture + mask resolution (long side) – matches the screen, no upscaled pixels
-  SEG_CROP: 256, CROP_PAD: 1.5,   // skin model runs on a square crop around the hand
-  SEG_LO: 0.12, SEG_HI: 0.5,      // skin confidence → opacity (solid inside, smooth edge)
-  ARM_DIM: 200, ARM_Z: [2.2, 3.4], ARM_MIN_SD: 3.5, ARM_LUM: 1.9,  // forearm traced from the wrist by palm skin colour
   NSFW_EVERY_MS: 600, NSFW_CLASSES: ["Porn", "Hentai"], NSFW_BLOCK: 0.55, NSFW_HOLD_MS: 2000,
 };
 const PREFIX = "metahand-scene-";
@@ -139,10 +134,10 @@ function watchIce(call, say, okMsg) {
 function keepAlive(peer, say) {
   peer.on("disconnected", () => { say("Lost the signalling server, reconnecting…"); try { peer.reconnect(); } catch (e) {} });
 }
-async function openCamera(video, facing) {
+async function openCamera(video, facing, cw = 1280, ch = 720) {
   if (video.srcObject) video.srcObject.getTracks().forEach((t) => t.stop());
   const s = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false,
+    video: { facingMode: { ideal: facing }, width: { ideal: cw }, height: { ideal: ch }, frameRate: { ideal: 30 } }, audio: false,
   });
   video.srcObject = s; await video.play();
   if (!video.videoWidth) await new Promise((r) => video.addEventListener("loadedmetadata", r, { once: true }));
@@ -225,157 +220,66 @@ function morph(src, W, H, R, isMax) {
 }
 const overlaps = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
 
+/* Hand cut-out: identical to the Netlify MetaHand Live build (mh-live-k7q3x9), plus the allowlisted held object. */
 function makeCutter(video, M, maxDim) {
-  const VW = video.videoWidth, VH = video.videoHeight;
-  const sc = Math.min(1, maxDim / Math.max(VW, VH));
-  const w = Math.round(VW * sc), h = Math.round(VH * sc);                 // detection frame (landmarks, object)
-  const hs = Math.min(1, CFG.HI_DIM / Math.max(VW, VH));
-  const MW = Math.round(VW * hs), MH = Math.round(VH * hs);              // full-quality frame + mask
-  const hi = canvas(MW, MH), hix = hi.getContext("2d");
-  const frame = canvas(w, h), hull = canvas(MW, MH), mask = canvas(MW, MH), seg = canvas(1, 1), obj = canvas(w, h);
-  const fctx = frame.getContext("2d"), hctx = hull.getContext("2d"), mctx = mask.getContext("2d");
-  const sctx = seg.getContext("2d"), octx = obj.getContext("2d");
-  const S = CFG.SEG_CROP, crop = canvas(S, S), crx = crop.getContext("2d");
-  const AW = CFG.ARM_DIM, AH = Math.max(1, Math.round(AW * MH / MW));
-  const armIn = canvas(AW, AH), aix = armIn.getContext("2d", { willReadFrequently: true });
-  const armOut = canvas(AW, AH), aox = armOut.getContext("2d"), armImg = aox.createImageData(AW, AH);
-  const sm = canvas(160, Math.max(1, Math.round(160 * MH / MW))), smx = sm.getContext("2d", { willReadFrequently: true });
+  const sc = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
+  const w = Math.round(video.videoWidth * sc), h = Math.round(video.videoHeight * sc);
+  const pack = canvas(w * 2, h), hull = canvas(w, h), mask = canvas(w, h), seg = canvas(w, h), frame = canvas(w, h), obj = canvas(w, h);
+  const pctx = pack.getContext("2d"), hctx = hull.getContext("2d"), mctx = mask.getContext("2d");
+  const sctx = seg.getContext("2d"), fctx = frame.getContext("2d"), octx = obj.getContext("2d");
+  const opt = { expand: 1.2, arm: true, bridge: true };
+  const sm = canvas(160, Math.max(1, Math.round(160 * h / w))), smx = sm.getContext("2d", { willReadFrequently: true });
   let segImg = null, objImg = null, last = [], lastT = -1e9, lastTs = 0, n = 0;
   let objBox = null, objScore = 0, objMiss = 0, objReady = false;
-  [hctx, mctx, crx, aix].forEach((c) => { c.imageSmoothingEnabled = true; c.imageSmoothingQuality = "high"; });
 
+  function ensureSeg(W, H) {
+    if (seg.width !== W || seg.height !== H) { seg.width = W; seg.height = H; segImg = null; }
+    if (!segImg) { segImg = sctx.createImageData(W, H); segImg.data.fill(255); }
+    return segImg.data;
+  }
   function polygon(lm) {
-    const P = lm.map((p) => [p.x * MW, p.y * MH]), wr = P[0], md = P[9];
-    let dx = wr[0] - md[0], dy = wr[1] - md[1]; const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
-    const px = -dy, py = dx, hw = (Math.hypot(P[5][0] - P[17][0], P[5][1] - P[17][1]) || L * 0.8) * 0.55;
+    const P = lm.map((p) => [p.x * w, p.y * h]);
+    const wr = P[0], md = P[9];
+    let dx = wr[0] - md[0], dy = wr[1] - md[1];
+    const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
+    const px = -dy, py = dx;
+    const hw = (Math.hypot(P[5][0] - P[17][0], P[5][1] - P[17][1]) || L * 0.8) * 0.55;
     const pts = P.concat([[wr[0] + px * hw, wr[1] + py * hw], [wr[0] - px * hw, wr[1] - py * hw]]);
-    if (CFG.ARM) { const a = Math.max(MW, MH) * 1.5, aw = hw * 1.6 + a * 0.5; pts.push([wr[0] + dx * a + px * aw, wr[1] + dy * a + py * aw], [wr[0] + dx * a - px * aw, wr[1] + dy * a - py * aw]); }
+    if (opt.arm) { const a = Math.max(w, h), aw = hw + a * 0.5; pts.push([wr[0] + dx * a + px * aw, wr[1] + dy * a + py * aw], [wr[0] + dx * a - px * aw, wr[1] + dy * a - py * aw]); }
     let cx = 0, cy = 0; for (const p of P) { cx += p[0]; cy += p[1]; } cx /= P.length; cy /= P.length;
-    return convexHull(pts).map(([x, y]) => [cx + (x - cx) * CFG.EXPAND, cy + (y - cy) * CFG.EXPAND]);
+    return convexHull(pts).map(([x, y]) => [cx + (x - cx) * opt.expand, cy + (y - cy) * opt.expand]);
   }
   function core(lm) {
-    const P = lm.map((p) => [p.x * MW, p.y * MH]), wr = P[0], md = P[9];
-    let dx = wr[0] - md[0], dy = wr[1] - md[1]; const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
-    const px = -dy, py = dx, hw = (Math.hypot(P[5][0] - P[17][0], P[5][1] - P[17][1]) || L * 0.8) * 0.38;
+    const P = lm.map((p) => [p.x * w, p.y * h]);
+    const wr = P[0], md = P[9];
+    let dx = wr[0] - md[0], dy = wr[1] - md[1];
+    const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
+    const px = -dy, py = dx;
+    const hw = (Math.hypot(P[5][0] - P[17][0], P[5][1] - P[17][1]) || L * 0.8) * 0.38;
     const pts = [0, 1, 5, 9, 13, 17].map((i) => P[i]).concat([[wr[0] + px * hw, wr[1] + py * hw], [wr[0] - px * hw, wr[1] - py * hw]]);
     const a = L * 0.45; pts.push([wr[0] + dx * a + px * hw, wr[1] + dy * a + py * hw], [wr[0] + dx * a - px * hw, wr[1] + dy * a - py * hw]);
     const hu = convexHull(pts);
     let cx = 0, cy = 0; for (const p of hu) { cx += p[0]; cy += p[1]; } cx /= hu.length; cy /= hu.length;
     return hu.map(([x, y]) => [cx + (x - cx) * 0.92, cy + (y - cy) * 0.92]);
   }
-  function fillPoly(ctx, poly) { ctx.beginPath(); poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.fill(); }
-
-  // Skin segmentation on a square crop around the hand at full camera quality (not the whole squashed frame)
-  function segCrop(hands, ts) {
-    let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
-    for (const lm of hands) for (const p of lm) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
-    const side = Math.max((x1 - x0) * MW, (y1 - y0) * MH) * CFG.CROP_PAD;
-    const ox0 = (x0 + x1) / 2 * MW - side / 2, oy0 = (y0 + y1) / 2 * MH - side / 2, k = S / side;
-    const cx0 = Math.max(0, ox0), cy0 = Math.max(0, oy0), cx1 = Math.min(MW, ox0 + side), cy1 = Math.min(MH, oy0 + side);
-    crx.fillStyle = "#000"; crx.fillRect(0, 0, S, S);
-    if (cx1 - cx0 < 2 || cy1 - cy0 < 2) return false;
-    crx.drawImage(hi, cx0, cy0, cx1 - cx0, cy1 - cy0, (cx0 - ox0) * k, (cy0 - oy0) * k, (cx1 - cx0) * k, (cy1 - cy0) * k);
-    let ok = false;
-    M.seg.segmentForVideo(crop, ts, (res) => {
-      const ms = res.confidenceMasks; if (!ms || ms.length < 4) return;
-      const a = ms[2].getAsFloat32Array(), b = ms[3].getAsFloat32Array(); // body skin + face skin
-      if (seg.width !== ms[2].width || seg.height !== ms[2].height) { seg.width = ms[2].width; seg.height = ms[2].height; segImg = null; }
-      if (!segImg) { segImg = sctx.createImageData(seg.width, seg.height); segImg.data.fill(255); }
-      const d = segImg.data;
-      for (let i = 0; i < a.length; i++) { const t = Math.min(1, Math.max(0, (a[i] + b[i] - CFG.SEG_LO) / (CFG.SEG_HI - CFG.SEG_LO))); d[i * 4 + 3] = 255 * t * t * (3 - 2 * t); } // solid inside, smooth edge
-      sctx.putImageData(segImg, 0, 0); ok = true;
-    });
-    if (ok) mctx.drawImage(seg, 0, 0, seg.width, seg.height, ox0, oy0, side, side);
-    return ok;
-  }
-
-  // Forearm: the skin model hardly sees arms. Trace the arm outward from the wrist through pixels
-  // that match the palm's skin colour and brightness, so it follows the arm wherever it bends.
-  function armMask(hands) {
-    aix.drawImage(hi, 0, 0, AW, AH);
-    const src = aix.getImageData(0, 0, AW, AH).data, N = AW * AH, A = new Uint8Array(N), G = new Uint8Array(N);
-    const cb = (i) => 128 - 0.168736 * src[i] - 0.331264 * src[i + 1] + 0.5 * src[i + 2];
-    const cr = (i) => 128 + 0.5 * src[i] - 0.418688 * src[i + 1] - 0.081312 * src[i + 2];
-    const lum = (i) => 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2] + 1;
-    const sgn = (a, b, c) => (a[0] - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (a[1] - c[1]);
-    const soft = new Float32Array(N);
-    for (const lm of hands) {
-      const P = lm.map((p) => [p.x * AW, p.y * AH]), wr = P[0];
-      let dx = wr[0] - P[9][0], dy = wr[1] - P[9][1]; const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
-      // skin colour from the palm triangle (wrist, index base, little-finger base), shrunk a little
-      const T = [P[0], P[5], P[17]], gx = (T[0][0] + T[1][0] + T[2][0]) / 3, gy = (T[0][1] + T[1][1] + T[2][1]) / 3;
-      const Q = T.map(([x, y]) => [gx + (x - gx) * 0.8, gy + (y - gy) * 0.8]);
-      let nS = 0, mb = 0, mr = 0, vb = 0, vr = 0, ml = 0;
-      const bx0 = Math.max(0, Math.floor(Math.min(Q[0][0], Q[1][0], Q[2][0]))), bx1 = Math.min(AW - 1, Math.ceil(Math.max(Q[0][0], Q[1][0], Q[2][0])));
-      const by0 = Math.max(0, Math.floor(Math.min(Q[0][1], Q[1][1], Q[2][1]))), by1 = Math.min(AH - 1, Math.ceil(Math.max(Q[0][1], Q[1][1], Q[2][1])));
-      for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
-        const pt = [x, y], d1 = sgn(pt, Q[0], Q[1]), d2 = sgn(pt, Q[1], Q[2]), d3 = sgn(pt, Q[2], Q[0]);
-        if ((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0)) continue;
-        const i = (y * AW + x) * 4, b = cb(i), r = cr(i); nS++; mb += b; mr += r; vb += b * b; vr += r * r; ml += Math.log(lum(i));
-      }
-      if (nS < 12) continue;
-      mb /= nS; mr /= nS; ml /= nS;
-      const sb = Math.max(CFG.ARM_MIN_SD, Math.sqrt(Math.max(0, vb / nS - mb * mb))), sr = Math.max(CFG.ARM_MIN_SD, Math.sqrt(Math.max(0, vr / nS - mr * mr)));
-      const z0 = CFG.ARM_Z[0], z1 = CFG.ARM_Z[1], lk = Math.log(CFG.ARM_LUM);
-      // per-pixel skin likeness on the arm side of the wrist
-      for (let y = 0; y < AH; y++) for (let x = 0; x < AW; x++) {
-        const t = (x - wr[0]) * dx + (y - wr[1]) * dy; if (t < -0.2 * L) continue;
-        const i = (y * AW + x) * 4, zb = (cb(i) - mb) / sb, zr = (cr(i) - mr) / sr;
-        const z = Math.sqrt(zb * zb + zr * zr) + Math.max(0, Math.abs(Math.log(lum(i)) - ml) - lk) * 6;
-        let a = Math.min(1, Math.max(0, (z1 - z) / (z1 - z0))); a = a * a * (3 - 2 * a);
-        const j = y * AW + x; if (a > soft[j]) soft[j] = a;
-      }
-      // seeds: skin pixels across the wrist
-      const st = [];
-      for (let k = 0; k <= 12; k++) for (let m = -3; m <= 3; m++) {
-        const t = L * (0.1 + 0.05 * k), x = Math.round(wr[0] + dx * t - dy * m), y = Math.round(wr[1] + dy * t + dx * m);
-        if (x < 0 || y < 0 || x >= AW || y >= AH) continue;
-        const j = y * AW + x; if (!G[j] && soft[j] > 0.5) { G[j] = 1; st.push(j); }
-      }
-      while (st.length) {
-        const i = st.pop(), x = i % AW;
-        for (const j of [x > 0 ? i - 1 : -1, x < AW - 1 ? i + 1 : -1, i - AW, i + AW])
-          if (j >= 0 && j < N && !G[j] && soft[j] > 0.5) { G[j] = 1; st.push(j); }
-      }
-    }
-    // the traced arm, holes (hair, shadow) filled, edge kept soft
-    const grown = G.map((v) => v * 255);
-    const filled = morph(morph(grown, AW, AH, 3, true), AW, AH, 3, false);
-    const near = morph(filled, AW, AH, 1, true);
-    const inner = morph(filled, AW, AH, 1, false);           // fill holes inside, leave the edge to the soft value
-    for (let i = 0; i < N; i++) A[i] = Math.max(near[i] ? soft[i] * 255 : 0, inner[i]);
-    // light 3×3 smoothing (twice) so the upscaled arm edge is smooth, not stepped
-    for (let pass = 0; pass < 2; pass++) {
-      const T = A.slice();
-      for (let y = 1; y < AH - 1; y++) for (let x = 1; x < AW - 1; x++) { const i = y * AW + x;
-        A[i] = (T[i - AW - 1] + T[i - AW] + T[i - AW + 1] + T[i - 1] + T[i] + T[i + 1] + T[i + AW - 1] + T[i + AW] + T[i + AW + 1]) / 9; }
-    }
-    const d = armImg.data;
-    for (let i = 0; i < N; i++) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 255; d[i * 4 + 3] = A[i]; }
-    aox.putImageData(armImg, 0, 0);
-    mctx.drawImage(armOut, 0, 0, MW, MH);
-  }
-
   function bridge(lm) {
     const SW = sm.width, SH = sm.height;
     smx.globalCompositeOperation = "copy"; smx.drawImage(mask, 0, 0, SW, SH);
     const id = smx.getImageData(0, 0, SW, SH), d = id.data, A = new Uint8Array(SW * SH);
-    for (let i = 0; i < A.length; i++) A[i] = d[i * 4 + 3] > 140 ? 255 : 0;   // only bridge solid skin
+    for (let i = 0; i < A.length; i++) A[i] = d[i * 4 + 3];
     const P = lm.map((p) => [p.x * SW, p.y * SH]), L = Math.hypot(P[0][0] - P[9][0], P[0][1] - P[9][1]) || 1;
-    const R = Math.max(2, Math.round(L * 0.35));
+    const R = Math.max(2, Math.round(L * 0.4));
     const C = morph(morph(A, SW, SH, R, true), SW, SH, R, false);
     for (let i = 0; i < C.length; i++) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 255; d[i * 4 + 3] = C[i]; }
     smx.putImageData(id, 0, 0);
     smx.globalCompositeOperation = "destination-in"; smx.drawImage(hull, 0, 0, SW, SH);
-    // only close gaps in a band across the wrist (watch, bracelet, sleeve edge)
-    const dx = (P[0][0] - P[9][0]) / L, dy = (P[0][1] - P[9][1]) / L, px = -dy, py = dx;
-    const B = (Math.hypot(P[5][0] - P[17][0], P[5][1] - P[17][1]) || L * 0.8) * 0.9;   // wrist width, not the whole frame
-    const bx = P[0][0] - dx * L * 0.15, by = P[0][1] - dy * L * 0.15, ex = bx + dx * L * 1.1, ey = by + dy * L * 1.1;
+    const dx = (P[0][0] - P[9][0]) / L, dy = (P[0][1] - P[9][1]) / L, px = -dy, py = dx, B = (SW + SH) * 3;
+    const bx = P[0][0] - dx * L * 0.15, by = P[0][1] - dy * L * 0.15;
     smx.beginPath(); smx.moveTo(bx + px * B, by + py * B); smx.lineTo(bx - px * B, by - py * B);
-    smx.lineTo(ex - px * B, ey - py * B); smx.lineTo(ex + px * B, ey + py * B); smx.closePath();
+    smx.lineTo(bx - px * B + dx * B, by - py * B + dy * B); smx.lineTo(bx + px * B + dx * B, by + py * B + dy * B); smx.closePath();
     smx.fillStyle = "#fff"; smx.fill();
     smx.globalCompositeOperation = "source-over";
-    mctx.drawImage(sm, 0, 0, MW, MH);
+    mctx.drawImage(sm, 0, 0, w, h);
   }
   function keepConnected(hands) {
     const SW = sm.width, SH = sm.height;
@@ -390,10 +294,10 @@ function makeCutter(video, M, maxDim) {
       for (const j of [x > 0 ? i - 1 : -1, x < SW - 1 ? i + 1 : -1, i - SW, i + SW])
         if (j >= 0 && j < N && !seen[j] && d[j * 4 + 3] > 100) { seen[j] = 1; st.push(j); }
     }
-    const keep = morph(seen.map((v) => v * 255), SW, SH, 2, true);
+    const keep = morph(seen.map((v) => v * 255), SW, SH, 1, true);
     for (let i = 0; i < N; i++) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 255; d[i * 4 + 3] = keep[i]; }
     smx.putImageData(id, 0, 0); smx.globalCompositeOperation = "source-over";
-    mctx.globalCompositeOperation = "destination-in"; mctx.drawImage(sm, 0, 0, MW, MH);
+    mctx.globalCompositeOperation = "destination-in"; mctx.drawImage(sm, 0, 0, w, h);
     mctx.globalCompositeOperation = "source-over";
   }
   // Allowlisted held object (sausage): detector box must overlap a hand; mask from interactive segmenter
@@ -427,37 +331,127 @@ function makeCutter(video, M, maxDim) {
       });
     }
   }
+  function fillPoly(ctx, poly) { ctx.beginPath(); poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.fill(); }
 
   function step() {
     let ts = performance.now(); if (ts <= lastTs) ts = lastTs + 1; lastTs = ts; n++;
-    hix.drawImage(video, 0, 0, MW, MH);           // one snapshot: mask and picture always match
-    fctx.drawImage(hi, 0, 0, w, h);
+    fctx.drawImage(video, 0, 0, w, h);                // one snapshot for tracking, mask and picture
     const r = M.hand.detectForVideo(frame, ts);
     if (r.landmarks && r.landmarks.length) { last = r.landmarks; lastT = ts; }
     const hands = ts - lastT < 250 ? last : [];
-    hctx.clearRect(0, 0, MW, MH); hctx.fillStyle = "#fff";
+    hctx.clearRect(0, 0, w, h); hctx.fillStyle = "#fff";
     for (const lm of hands) fillPoly(hctx, polygon(lm));
-    mctx.globalCompositeOperation = "source-over"; mctx.clearRect(0, 0, MW, MH);
+    mctx.globalCompositeOperation = "source-over"; mctx.clearRect(0, 0, w, h);
     heldObject(hands, ts);
     if (hands.length) {
-      const any = segCrop(hands, ts);
-      if (CFG.ARM) armMask(hands);
-      mctx.globalCompositeOperation = "destination-in"; mctx.drawImage(hull, 0, 0);
-      mctx.globalCompositeOperation = "source-over"; mctx.fillStyle = "#fff";
-      for (const lm of hands) fillPoly(mctx, core(lm));
-      if (objBox && objReady) mctx.drawImage(obj, 0, 0, MW, MH);
-      if (CFG.BRIDGE) for (const lm of hands) bridge(lm);
-      keepConnected(hands);
-      if (!any && !CFG.ARM) mctx.drawImage(hull, 0, 0);
+      let any = false;
+      M.seg.segmentForVideo(frame, ts, (res) => {
+        const ms = res.confidenceMasks; if (!ms || ms.length < 4) return;
+        const a = ms[2].getAsFloat32Array(), b = ms[3].getAsFloat32Array(); // body skin + face skin
+        const d = ensureSeg(ms[2].width, ms[2].height);
+        for (let i = 0, k = a.length; i < k; i++) { const v = a[i] + b[i]; d[i * 4 + 3] = v > 1 ? 255 : v * 255; }
+        sctx.putImageData(segImg, 0, 0); mctx.drawImage(seg, 0, 0, w, h); any = true;
+      });
+      if (any) {
+        mctx.globalCompositeOperation = "destination-in"; mctx.drawImage(hull, 0, 0);
+        mctx.globalCompositeOperation = "source-over"; mctx.fillStyle = "#fff";
+        for (const lm of hands) fillPoly(mctx, core(lm));
+        if (objBox && objReady) mctx.drawImage(obj, 0, 0, w, h);
+        if (opt.bridge) for (const lm of hands) bridge(lm);
+        keepConnected(hands);
+      } else mctx.drawImage(hull, 0, 0);
     }
+    pctx.drawImage(frame, 0, 0);
+    pctx.fillStyle = "#000"; pctx.fillRect(w, 0, w, h);
+    pctx.drawImage(mask, w, 0);
     return { hands: hands.length, object: objBox ? objScore : 0 };
   }
-  return { frame: hi, mask, step, w: MW, h: MH, dw: w, dh: h };
+  return { frame, mask, pack, step, w, h };
+}
+
+/* Compositor: same shader as the Netlify build (5×5 softened mask edge, colour match to the scene, light grain).
+   Draws only the hand, with alpha, so the scene and safety gate stay in 2D. */
+const VS = `attribute vec2 p;varying vec2 v;void main(){v=p*0.5+0.5;gl_Position=vec4(p,0.0,1.0);}`;
+const FS = `precision mediump float;
+varying vec2 v;
+uniform sampler2D uPack;
+uniform vec3 uTint;
+uniform float uTexel,uSoft,uFlip,uGrain,uTime;
+void main(){
+  vec2 l = v;
+  if (uFlip > 0.5) l.x = 1.0 - l.x;
+  vec3 hc = texture2D(uPack, vec2(l.x*0.5, l.y)).rgb;
+  float m = 0.0;
+  for (int i=-2;i<=2;i++) for (int j=-2;j<=2;j++){
+    vec2 o = vec2(float(i), float(j)) * uTexel * uSoft;
+    m += texture2D(uPack, vec2(0.5 + clamp(l.x+o.x, 0.002, 0.998)*0.5, clamp(l.y+o.y, 0.0, 1.0))).r;
+  }
+  float a = smoothstep(0.3, 0.7, m/25.0);
+  hc = hc * uTint;
+  float n = fract(sin(dot(v*vec2(1234.5,987.6) + uTime, vec2(12.9898,78.233))) * 43758.5453) - 0.5;
+  hc += n * uGrain;
+  gl_FragColor = vec4(hc * a, a);
+}`;
+function makeCompositor() {
+  const cv = canvas(2, 2);
+  const gl = cv.getContext("webgl", { alpha: true, premultipliedAlpha: true, antialias: false, preserveDrawingBuffer: true });
+  if (!gl) throw new Error("WebGL is not available in this browser");
+  const sh = (t, src) => { const o = gl.createShader(t); gl.shaderSource(o, src); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  const pr = gl.createProgram();
+  gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(pr); gl.useProgram(pr);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const pl = gl.getAttribLocation(pr, "p"); gl.enableVertexAttribArray(pl); gl.vertexAttribPointer(pl, 2, gl.FLOAT, false, 0, 0);
+  const U = {}; ["uPack", "uTint", "uTexel", "uSoft", "uFlip", "uGrain", "uTime"].forEach((k) => (U[k] = gl.getUniformLocation(pr, k)));
+  const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.uniform1i(U.uPack, 0);
+  const st = { soft: 1.5, match: 0.5, grain: 0.02, tint: [1, 1, 1] };
+  const mc = canvas(64, 32), mcx = mc.getContext("2d", { willReadFrequently: true });
+  let lastMeasure = 0;
+  function measure(scene, pack) {   // nudge the hand's colour towards the scene's light, as on Netlify
+    mcx.drawImage(scene, 0, 0, 16, 16);
+    let d = mcx.getImageData(0, 0, 16, 16).data; const b = [1, 1, 1];
+    for (let i = 0; i < d.length; i += 4) { b[0] += d[i] / 256; b[1] += d[i + 1] / 256; b[2] += d[i + 2] / 256; }
+    mcx.drawImage(pack, 0, 0, 64, 32);
+    d = mcx.getImageData(0, 0, 64, 32).data; const hs = [0, 0, 0]; let ws = 0;
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+      const i = (y * 64 + x) * 4, m = d[(y * 64 + x + 32) * 4] / 255; if (m < 0.5) continue;
+      hs[0] += d[i] * m; hs[1] += d[i + 1] * m; hs[2] += d[i + 2] * m; ws += m;
+    }
+    if (ws < 3) return;
+    const hm = hs.map((x) => x / ws + 1), lum = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+    const bl = lum(b), hl = lum(hm);
+    for (let k = 0; k < 3; k++) {
+      const target = (bl / hl) * Math.sqrt((b[k] / bl) / (hm[k] / hl));
+      const tt = Math.min(1.8, Math.max(0.55, 1 + (target - 1) * st.match));
+      st.tint[k] += (tt - st.tint[k]) * 0.3;
+    }
+  }
+  function render(scene, pack, W, H, flip) {
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    gl.viewport(0, 0, W, H);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, pack);
+    const now = performance.now();
+    if (now - lastMeasure > 400) { lastMeasure = now; try { measure(scene, pack); } catch (e) {} }
+    gl.uniform3f(U.uTint, st.tint[0], st.tint[1], st.tint[2]);
+    gl.uniform1f(U.uTexel, 2 / pack.width); gl.uniform1f(U.uSoft, st.soft);
+    gl.uniform1f(U.uFlip, flip ? 1 : 0); gl.uniform1f(U.uGrain, st.grain);
+    gl.uniform1f(U.uTime, (now / 1000) % 100);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    return cv;
+  }
+  return { render };
 }
 
 // ---------- Hand owner view ----------
 const out = $("out"), ox = out.getContext("2d");
-const cut = canvas(), cx = cut.getContext("2d");
+let comp = null;
 const gateC = canvas(224, 224), gx = gateC.getContext("2d");
 const hVideo = $("hVideo"), remote = $("hRemote");
 let cutter = null, running = false, bgImg = null, peer = null, remoteOk = false;
@@ -510,13 +504,8 @@ function render() {
     ox.globalAlpha = 0.6; ox.drawImage(cutter.frame, 0, 0, W, H);
     ox.globalAlpha = 0.45; ox.drawImage(cutter.mask, 0, 0, W, H); ox.globalAlpha = 1;
   } else {
-    if (cut.width !== W || cut.height !== H) { cut.width = W; cut.height = H; }
-    cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = "high";
-    cx.globalCompositeOperation = "copy"; cx.drawImage(cutter.frame, 0, 0, W, H);
-    cx.globalCompositeOperation = "destination-in"; cx.drawImage(cutter.mask, 0, 0, W, H);
-    cx.globalCompositeOperation = "source-over";
-    ox.save(); if (mirror) { ox.translate(W, 0); ox.scale(-1, 1); }
-    ox.drawImage(cut, 0, 0); ox.restore();
+    if (!comp) comp = makeCompositor();
+    ox.drawImage(comp.render(out, cutter.pack, W, H, mirror), 0, 0, W, H);
   }
   // Safety gate checks what is on screen; withheld frames are covered
   gateCheck(performance.now());
@@ -532,7 +521,7 @@ function render() {
   b.textContent = !gate.ok ? "withheld" : info.object ? `hand + ${CFG.ALLOWED[0]}` : info.hands ? "hand" : "no hand";
   b.style.color = !gate.ok ? "var(--bad)" : info.object ? "var(--ok)" : "var(--text)";
   $("hStats").textContent =
-    `fps ${fps.toFixed(1)} · hands ${info.hands} · object ${info.object ? info.object.toFixed(2) : "–"} · track ${cutter.dw}×${cutter.dh} · mask ${cutter.w}×${cutter.h}\n` +
+    `fps ${fps.toFixed(1)} · hands ${info.hands} · object ${info.object ? info.object.toFixed(2) : "–"} · cut ${cutter.w}×${cutter.h}\n` +
     `scene ${remoteOk ? remote.videoWidth + "×" + remote.videoHeight + " (live)" : bgImg ? "image" : "default"} · ` +
     `safety ${gate.score == null ? "pending" : gate.score.toFixed(3)} ${gate.ok ? "pass" : "withheld"}`;
 }
@@ -548,7 +537,7 @@ async function startHand() {
   $("hStart").disabled = true;
   try {
     say("Starting camera…");
-    await openCamera(hVideo, $("hCam").value);
+    await openCamera(hVideo, $("hCam").value, 640, 480);   // same camera request as the Netlify build
     const vw = hVideo.videoWidth, vh = hVideo.videoHeight, oh = Math.min(960, vh), ow = Math.round(oh * vw / vh);
     out.width = ow; out.height = oh;
     cutter = makeCutter(hVideo, models, +$("hDetail").value);
