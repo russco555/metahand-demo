@@ -47,6 +47,11 @@
   </div>
   <div class="controls">
     <label class="chk"><input type="checkbox" id="debug"> Show mask overlay</label>
+    <label class="chk"><input type="checkbox" id="depthMode"> Experimental: depth + skin</label>
+  </div>
+  <div class="controls" id="depthControls" hidden>
+    <label class="chk" for="depthNear">Nearest foreground: <span id="depthNearValue">45%</span></label>
+    <input id="depthNear" type="range" min="20" max="80" step="5" value="45" style="width:100%">
   </div>
   <div id="stats"></div>
 </main>
@@ -92,6 +97,7 @@ const $ = (id) => document.getElementById(id);
 const video = $("video"), out = $("out"), octx = out.getContext("2d");
 const statusEl = $("status"), statsEl = $("stats"), badge = $("badge");
 const startBtn = $("start"), flipBtn = $("flip"), debugChk = $("debug");
+const depthMode = $("depthMode"), depthNear = $("depthNear"), depthNearValue = $("depthNearValue"), depthControls = $("depthControls");
 const setStatus = (t, cls = "") => { statusEl.textContent = t; statusEl.className = cls; };
 
 const mk = (w = 1, h = 1, rf = false) => {
@@ -106,6 +112,8 @@ const [gateC, gctx]  = mk(224, 224);    // safety gate input
 
 // ---------------- Models ----------------
 let hands, detector, skinSeg, objSeg, nsfwModel = null;
+let depthEstimator = null, depthBusy = false, depthMap = null, depthW = 0, depthH = 0, depthUpdatedAt = 0, depthFrame = 0;
+const [depthInput, depthInputCtx] = mk(1, 1);
 
 async function create(Cls, vision, path, extra) {
   for (const delegate of ["GPU", "CPU"]) {
@@ -235,6 +243,7 @@ function process(ts) {
   const W = work.width, H = work.height;
   wctx.drawImage(video, 0, 0, W, H);
   frame++;
+  if (depthMode.checked && depthEstimator && !depthBusy && frame % 10 === 0) updateDepth();
 
   // 1. Hands
   const hr = hands.detectForVideo(work, ts);
@@ -295,6 +304,21 @@ function process(ts) {
       }
     }
   }
+  if (depthMode.checked && depthMap && performance.now() - depthUpdatedAt < 2200 && skin) {
+    // Hybrid mask: skin semantics remove non-skin objects; relative depth keeps only the nearest skin pixels.
+    const d = maskImg.data;
+    const nearFraction = Number(depthNear.value) / 100;
+    const cutoff = depthMap.cutoff;
+    for (let y = 0; y < H; y++) {
+      const sy = Math.min(skinH - 1, Math.floor(y * skinH / H)) * skinW;
+      const dy = Math.min(depthH - 1, Math.floor(y * depthH / H)) * depthW;
+      for (let x = 0; x < W; x++) {
+        if (skin[sy + Math.min(skinW - 1, Math.floor(x * skinW / W))] !== CFG.SKIN_CAT) continue;
+        const z = depthMap.data[dy + Math.min(depthW - 1, Math.floor(x * depthW / W))];
+        if (z >= cutoff) { const i = (y * W + x) * 4; d[i + 1] = 255; d[i + 3] = 255; }
+      }
+    }
+  }
   mctx.putImageData(maskImg, 0, 0);
 
   // 6. Composite into the stage (the frame that would be sent)
@@ -337,9 +361,64 @@ function process(ts) {
   badge.style.color = !gate.ok ? "var(--bad)" : objBox ? "var(--ok)" : "var(--text)";
   statsEl.textContent =
     `fps ${fps.toFixed(1)}  ·  hands ${handCount}  ·  object ${objBox ? objScore.toFixed(2) : "–"}\n` +
+    `mask ${depthMode.checked ? (depthMap && ts - depthUpdatedAt < 2200 ? "depth + skin" : "depth warming up") : "original skin + hand ROI"}\n` +
     `safety ${gate.score == null ? "pending" : gate.score.toFixed(3)} (block ≥ ${CFG.NSFW_BLOCK})  ·  ${gate.ok ? "pass" : "withheld"}\n` +
     `work ${W}×${H}  ·  out ${OW}×${OH}  ·  allowlist: ${CFG.ALLOWED.join(", ")}`;
 }
+
+// ---------------- Experimental depth + skin mode ----------------
+async function enableDepthMode() {
+  depthControls.hidden = !depthMode.checked;
+  if (!depthMode.checked) return;
+  if (depthEstimator) { setStatus("Depth + skin mode ready", "ok"); return; }
+  depthMode.disabled = true;
+  setStatus("Loading depth model (first load is about 50–100 MB)…");
+  try {
+    const { pipeline, env } = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2");
+    env.allowLocalModels = false;
+    try {
+      depthEstimator = await pipeline("depth-estimation", "onnx-community/depth-anything-v2-small", { device: "webgpu", dtype: "fp16" });
+    } catch (gpuError) {
+      console.warn("WebGPU depth init failed; trying WASM", gpuError);
+      depthEstimator = await pipeline("depth-estimation", "onnx-community/depth-anything-v2-small", { dtype: "q8" });
+    }
+    setStatus("Depth + skin mode ready. Adjust the nearest-foreground threshold below.", "ok");
+  } catch (e) {
+    console.error("Depth model failed", e);
+    depthMode.checked = false;
+    depthControls.hidden = true;
+    setStatus("Depth model failed to load; original segmentation remains active: " + e.message, "bad");
+  } finally { depthMode.disabled = false; }
+}
+async function updateDepth() {
+  if (!depthEstimator || depthBusy || !work.width) return;
+  depthBusy = true;
+  try {
+    depthInput.width = work.width; depthInput.height = work.height;
+    depthInputCtx.drawImage(work, 0, 0);
+    const result = await depthEstimator(depthInput);
+    const t = result.predicted_depth;
+    if (t?.data?.length && t.dims?.length >= 2) {
+      const h = t.dims[t.dims.length - 2], w = t.dims[t.dims.length - 1];
+      const data = Float32Array.from(t.data);
+      // Estimate a robust near-depth cutoff from a sampled percentile to ignore outliers.
+      const sample = [];
+      for (let i = 0; i < data.length; i += 9) if (Number.isFinite(data[i])) sample.push(data[i]);
+      sample.sort((a, b) => a - b);
+      const percentile = Math.max(0, Math.min(99, 100 - Number(depthNear.value)));
+      const cutoff = sample[Math.floor((percentile / 100) * (sample.length - 1))] ?? 0;
+      depthMap = { data, width: w, height: h, cutoff };
+      depthW = w; depthH = h; depthUpdatedAt = performance.now();
+    }
+  } catch (e) { console.warn("Depth frame failed", e); }
+  finally { depthBusy = false; }
+}
+depthMode.addEventListener("change", enableDepthMode);
+depthNear.addEventListener("input", () => {
+  depthNearValue.textContent = depthNear.value + "%";
+  // The cutoff is recalculated on the next depth inference.
+  if (depthMap) depthUpdatedAt = 0;
+});
 
 // ---------------- Wire up ----------------
 startBtn.onclick = async () => {
