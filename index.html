@@ -25,9 +25,6 @@
   #stats { max-width:520px; margin:10px auto 30px; color:var(--muted); font:12px/1.5 ui-monospace,Menlo,monospace; white-space:pre-wrap; }
   #video { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
 </style>
-<!-- Safety gate model (TensorFlow.js + NSFWJS) -->
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
 </head>
 <body>
 <header>
@@ -77,11 +74,6 @@ const CFG = {
   OBJ_PAD: 0.10,
   SKIN_CAT: 2,            // selfie_multiclass: 2 = body-skin
   FEATHER_PX: 2,
-  // Safety gate
-  NSFW_EVERY_MS: 400,
-  NSFW_CLASSES: ["Porn", "Hentai"],
-  NSFW_BLOCK: 0.55,
-  NSFW_HOLD_MS: 2000,     // stay blocked this long after a hit
 };
 
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
@@ -108,10 +100,9 @@ const [work, wctx]   = mk(1, 1, true);  // downscaled camera frame
 const [maskC, mctx]  = mk();            // alpha mask at work res
 const [cut, cctx]    = mk();            // camera cut-out at output res
 const [stage, sctx]  = mk();            // composited frame (what would be sent)
-const [gateC, gctx]  = mk(224, 224);    // safety gate input
 
 // ---------------- Models ----------------
-let hands, detector, skinSeg, objSeg, nsfwModel = null;
+let hands, detector, skinSeg, objSeg;
 let depthEstimator = null, depthBusy = false, depthMap = null, depthW = 0, depthH = 0, depthUpdatedAt = 0, depthFrame = 0;
 const [depthInput, depthInputCtx] = mk(1, 1);
 
@@ -134,12 +125,6 @@ async function loadModels() {
     create(ImageSegmenter, vision, M.seg, { runningMode: "VIDEO", outputCategoryMask: true, outputConfidenceMasks: false }),
     create(InteractiveSegmenter, vision, M.magic, { outputCategoryMask: false, outputConfidenceMasks: true }),
   ]);
-  try {
-    nsfwModel = await window.nsfwjs.load();
-  } catch (e) {
-    console.error("Safety model failed", e);
-    nsfwModel = null;
-  }
 }
 
 // ---------------- Camera ----------------
@@ -210,27 +195,6 @@ let skin = null, skinW = 0, skinH = 0;
 let objBox = null, objScore = 0, objMiss = 0;
 let objMask = null, objMaskW = 0, objMaskH = 0;
 let handCount = 0, fps = 0, lastFpsT = performance.now(), fpsFrames = 0;
-const gate = { ok: false, score: null, blockedUntil: 0, checking: false, lastCheck: 0 };
-
-// ---------------- Safety gate (fails closed) ----------------
-async function gateCheck(now) {
-  if (!nsfwModel) { gate.ok = false; return; }
-  if (gate.checking || now - gate.lastCheck < CFG.NSFW_EVERY_MS) return;
-  gate.checking = true; gate.lastCheck = now;
-  gctx.drawImage(stage, 0, 0, 224, 224);
-  try {
-    const preds = await nsfwModel.classify(gateC);
-    const score = preds.filter((p) => CFG.NSFW_CLASSES.includes(p.className))
-                       .reduce((s, p) => s + p.probability, 0);
-    gate.score = score;
-    if (score >= CFG.NSFW_BLOCK) gate.blockedUntil = performance.now() + CFG.NSFW_HOLD_MS;
-    gate.ok = performance.now() >= gate.blockedUntil;
-  } catch (e) {
-    console.error(e); gate.ok = false;
-  }
-  gate.checking = false;
-}
-
 // ---------------- Main loop ----------------
 function loop() {
   if (!running) return;
@@ -338,31 +302,20 @@ function process(ts) {
     sctx.drawImage(cut, 0, 0);
   }
 
-  // 7. Safety gate: only show the stage when the latest check passed
-  gateCheck(ts);
+  // 7. Display the composited frame directly; no safety classifier or output gate.
   octx.save();
-  if (gate.ok) {
-    if (mirror) { octx.translate(OW, 0); octx.scale(-1, 1); }
-    octx.drawImage(stage, 0, 0);
-    octx.restore();
-  } else {
-    octx.restore();
-    drawBackground(octx, OW, OH);
-    octx.fillStyle = "rgba(0,0,0,.55)"; octx.fillRect(0, 0, OW, OH);
-    octx.fillStyle = "#fff"; octx.textAlign = "center";
-    octx.font = `${Math.round(OH / 28)}px -apple-system, sans-serif`;
-    octx.fillText(nsfwModel ? "Frame withheld by safety check" : "Safety model not loaded – output off", OW / 2, OH / 2);
-  }
+  if (mirror) { octx.translate(OW, 0); octx.scale(-1, 1); }
+  octx.drawImage(stage, 0, 0);
+  octx.restore();
 
   // Stats
   fpsFrames++;
   if (ts - lastFpsT > 1000) { fps = fpsFrames * 1000 / (ts - lastFpsT); fpsFrames = 0; lastFpsT = ts; }
-  badge.textContent = !gate.ok ? "withheld" : objBox ? `hand + ${CFG.ALLOWED[0]}` : handCount ? "hand" : "no hand";
-  badge.style.color = !gate.ok ? "var(--bad)" : objBox ? "var(--ok)" : "var(--text)";
+  badge.textContent = objBox ? `hand + ${CFG.ALLOWED[0]}` : handCount ? "hand" : "no hand";
+  badge.style.color = objBox ? "var(--ok)" : "var(--text)";
   statsEl.textContent =
     `fps ${fps.toFixed(1)}  ·  hands ${handCount}  ·  object ${objBox ? objScore.toFixed(2) : "–"}\n` +
     `mask ${depthMode.checked ? (depthMap && ts - depthUpdatedAt < 2200 ? "depth + skin" : "depth warming up") : "original skin + hand ROI"}\n` +
-    `safety ${gate.score == null ? "pending" : gate.score.toFixed(3)} (block ≥ ${CFG.NSFW_BLOCK})  ·  ${gate.ok ? "pass" : "withheld"}\n` +
     `work ${W}×${H}  ·  out ${OW}×${OH}  ·  allowlist: ${CFG.ALLOWED.join(", ")}`;
 }
 
@@ -435,7 +388,7 @@ flipBtn.onclick = async () => {
 
 try {
   await loadModels();
-  setStatus(nsfwModel ? "Models ready – tap Start camera" : "Vision ready, but safety model failed to load – output will stay off", nsfwModel ? "ok" : "bad");
+  setStatus("Models ready – tap Start camera", "ok");
   startBtn.disabled = false;
 } catch (e) {
   console.error(e);
