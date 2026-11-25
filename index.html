@@ -227,7 +227,7 @@ function makeCutter(video, M, maxDim) {
   const pack = canvas(w * 2, h), hull = canvas(w, h), mask = canvas(w, h), seg = canvas(w, h), frame = canvas(w, h), obj = canvas(w, h);
   const pctx = pack.getContext("2d"), hctx = hull.getContext("2d"), mctx = mask.getContext("2d");
   const sctx = seg.getContext("2d"), fctx = frame.getContext("2d"), octx = obj.getContext("2d");
-  const opt = { expand: 1.06, arm: false, bridge: false };
+  const opt = { expand: 1.12, arm: true, bridge: false };
   const sm = canvas(160, Math.max(1, Math.round(160 * h / w))), smx = sm.getContext("2d", { willReadFrequently: true });
   let segImg = null, objImg = null, last = [], lastT = -1e9, lastTs = 0, n = 0;
   let objBox = null, objScore = 0, objMiss = 0, objReady = false;
@@ -245,7 +245,7 @@ function makeCutter(video, M, maxDim) {
     const px = -dy, py = dx;
     const hw = (Math.hypot(P[5][0] - P[17][0], P[5][1] - P[17][1]) || L * 0.8) * 0.55;
     const pts = P.concat([[wr[0] + px * hw, wr[1] + py * hw], [wr[0] - px * hw, wr[1] - py * hw]]);
-    if (opt.arm) { const a = Math.max(w, h), aw = hw + a * 0.5; pts.push([wr[0] + dx * a + px * aw, wr[1] + dy * a + py * aw], [wr[0] + dx * a - px * aw, wr[1] + dy * a - py * aw]); }
+    if (opt.arm) { const a = Math.max(w, h), aw = hw + a * 0.18; pts.push([wr[0] + dx * a + px * aw, wr[1] + dy * a + py * aw], [wr[0] + dx * a - px * aw, wr[1] + dy * a - py * aw]); }
     let cx = 0, cy = 0; for (const p of P) { cx += p[0]; cy += p[1]; } cx /= P.length; cy /= P.length;
     return convexHull(pts).map(([x, y]) => [cx + (x - cx) * opt.expand, cy + (y - cy) * opt.expand]);
   }
@@ -285,7 +285,7 @@ function makeCutter(video, M, maxDim) {
     const SW = sm.width, SH = sm.height;
     smx.globalCompositeOperation = "copy"; smx.drawImage(mask, 0, 0, SW, SH);
     const id = smx.getImageData(0, 0, SW, SH), d = id.data, N = SW * SH, seen = new Uint8Array(N), st = [];
-    for (const lm of hands) for (const k of [0, 5, 9, 13, 17]) {
+    for (const lm of hands) for (let k = 0; k < lm.length; k++) {
       const x = Math.min(SW - 1, Math.max(0, Math.round(lm[k].x * SW))), y = Math.min(SH - 1, Math.max(0, Math.round(lm[k].y * SH)));
       const i = y * SW + x; if (!seen[i] && d[i * 4 + 3] > 100) { seen[i] = 1; st.push(i); }
     }
@@ -339,7 +339,7 @@ function makeCutter(video, M, maxDim) {
     fctx.drawImage(video, 0, 0, w, h);                // fresh snapshot for this frame only
     const r = M.hand.detectForVideo(frame, ts);
     if (r.landmarks && r.landmarks.length) { last = r.landmarks; lastT = ts; }
-    const hands = ts - lastT < 80 ? last : [];
+    const hands = ts - lastT < 160 ? last : [];
     hctx.clearRect(0, 0, w, h); hctx.fillStyle = "#fff";
     for (const lm of hands) fillPoly(hctx, polygon(lm));
     mctx.globalCompositeOperation = "source-over";
