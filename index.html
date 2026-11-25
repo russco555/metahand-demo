@@ -35,11 +35,8 @@
   .field { display:grid; gap:4px; margin-top:10px; color:var(--muted); font-size:14px; }
 </style>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-<!-- Safety gate (TensorFlow.js + NSFWJS); model weights from jsDelivr -->
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/nsfwjs@4.2.1/dist/models/mobilenet_v2/model.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/nsfwjs@4.2.1/dist/models/mobilenet_v2/group1-shard1of1.min.js"></script>
+
+<!-- Depth estimation loaded on demand -->
 </head>
 <body>
 <header>
@@ -68,7 +65,7 @@
       <select id="hCam"><option value="environment">Rear camera (hand behind phone)</option><option value="user">Front camera</option></select>
       <select id="hDetail"><option value="384">Smooth</option><option value="512">Balanced</option><option value="640" selected>Sharp (Netlify)</option></select>
     </div>
-    <div class="row"><label class="chk"><input type="checkbox" id="hDebug"> Show mask overlay</label></div>
+    <div class="row"><label class="chk"><input type="checkbox" id="hDepth" checked> Depth assist</label><label class="chk"><input type="checkbox" id="hDebug"> Show mask overlay</label></div>
     <div class="status" id="hStatus">Loading models…</div>
     <div class="stats" id="hStats"></div>
   </section>
@@ -88,12 +85,13 @@
 <script type="module">
 import { FilesetResolver, HandLandmarker, ImageSegmenter, ObjectDetector, InteractiveSegmenter }
   from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 
 // ================= Config =================
 const CFG = {
   ALLOWED: ["hot dog"],      // held objects that may stay in the hand (COCO "hot dog" stands in for sausage)
   DETECT_MIN_SCORE: 0.3, DETECT_EVERY: 8, OBJMASK_EVERY: 4, OBJ_MISS_LIMIT: 3,
-  NSFW_EVERY_MS: 600, NSFW_CLASSES: ["Porn", "Hentai"], NSFW_BLOCK: 0.55, NSFW_HOLD_MS: 2000,
+  DEPTH_EVERY_MS: 850, DEPTH_TOLERANCE: 0.18,
 };
 const PREFIX = "metahand-scene-";
 /* Mobile data usually needs a TURN relay. Put your own details here (Metered, Twilio, Cloudflare…). */
@@ -185,17 +183,10 @@ async function loadModels() {
     create(ObjectDetector, vision, MODELS.det, { runningMode: "VIDEO", scoreThreshold: CFG.DETECT_MIN_SCORE, categoryAllowlist: CFG.ALLOWED, maxResults: 3 }),
     create(InteractiveSegmenter, vision, MODELS.magic, { outputCategoryMask: false, outputConfidenceMasks: true }),
   ]);
-  let nsfw = null;
-  try {
-    const mj = window.model, w64 = window.group1_shard1of1;
-    if (!mj || !w64) throw new Error("safety model files missing");
-    const bin = atob(w64), bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    nsfw = await window.nsfwjs.load(tf.io.fromMemory({
-      modelTopology: mj.modelTopology, weightSpecs: mj.weightsManifest[0].weights, weightData: bytes.buffer,
-    }), { size: 224 });
-  } catch (e) { console.error("Safety model failed", e); }
-  return { hand, seg, det, magic, nsfw };
+  let depthEstimator = null;
+  try { say("Loading depth model (first load downloads weights)…"); depthEstimator = await pipeline("depth-estimation", "onnx-community/depth-anything-v2-small", { dtype: "q8" }); }
+  catch(e) { console.warn("Depth model unavailable; using existing hand/skin mask",e); }
+  return { hand, seg, det, magic, depthEstimator };
 }
 
 // ---------- Hand cut-out (same method as the MetaHand Live app) ----------
@@ -231,6 +222,7 @@ function makeCutter(video, M, maxDim) {
   const sm = canvas(160, Math.max(1, Math.round(160 * h / w))), smx = sm.getContext("2d", { willReadFrequently: true });
   let segImg = null, objImg = null, last = [], lastT = -1e9, lastTs = 0, n = 0;
   let objBox = null, objScore = 0, objMiss = 0, objReady = false;
+  let depthData=null,depthW=0,depthH=0,depthBusy=false,depthAt=0;
 
   function ensureSeg(W, H) {
     if (seg.width !== W || seg.height !== H) { seg.width = W; seg.height = H; segImg = null; }
@@ -331,11 +323,30 @@ function makeCutter(video, M, maxDim) {
       });
     }
   }
+  function updateDepth(ts) {
+    if(!M.depthEstimator||depthBusy||ts-depthAt<CFG.DEPTH_EVERY_MS)return;
+    depthBusy=true;depthAt=ts;
+    M.depthEstimator(frame).then(r=>{
+      const im=r?.depth;if(!im?.data||!im.width||!im.height)return;
+      const src=im.data,v=new Float32Array(src.length);let lo=Infinity,hi=-Infinity;
+      for(let i=0;i<src.length;i++){v[i]=Number(src[i]);lo=Math.min(lo,v[i]);hi=Math.max(hi,v[i]);}
+      const range=Math.max(1e-6,hi-lo);for(let i=0;i<v.length;i++)v[i]=(v[i]-lo)/range;
+      depthData=v;depthW=im.width;depthH=im.height;
+    }).catch(e=>console.warn("Depth inference failed",e)).finally(()=>depthBusy=false);
+  }
+  function applyDepth(hands){
+    if(!$("hDepth").checked||!depthData||!hands.length)return;
+    const s=[];for(const lm of hands)for(const p of lm){const x=Math.max(0,Math.min(depthW-1,Math.round(p.x*(depthW-1)))),y=Math.max(0,Math.min(depthH-1,Math.round(p.y*(depthH-1))));s.push(depthData[y*depthW+x]);}
+    s.sort((a,b)=>a-b);const hd=s[Math.floor(s.length*.65)]??.5,id=mctx.getImageData(0,0,w,h),d=id.data;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){const i=(y*w+x)*4+3;if(!d[i])continue;const dx=Math.min(depthW-1,Math.floor(x/w*depthW)),dy=Math.min(depthH-1,Math.floor(y/h*depthH)),z=depthData[dy*depthW+dx],keep=Math.max(0,Math.min(1,(z-(hd-CFG.DEPTH_TOLERANCE))/.12));d[i]=Math.round(d[i]*keep);}
+    mctx.putImageData(id,0,0);
+  }
   function fillPoly(ctx, poly) { ctx.beginPath(); poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.fill(); }
 
   function step() {
     let ts = performance.now(); if (ts <= lastTs) ts = lastTs + 1; lastTs = ts; n++;
-    fctx.drawImage(video, 0, 0, w, h);                // one snapshot for tracking, mask and picture
+    fctx.drawImage(video, 0, 0, w, h);
+    updateDepth(ts);
     const r = M.hand.detectForVideo(frame, ts);
     if (r.landmarks && r.landmarks.length) { last = r.landmarks; lastT = ts; }
     const hands = ts - lastT < 250 ? last : [];
@@ -358,6 +369,7 @@ function makeCutter(video, M, maxDim) {
         for (const lm of hands) fillPoly(mctx, core(lm));
         if (objBox && objReady) mctx.drawImage(obj, 0, 0, w, h);
         if (opt.bridge) for (const lm of hands) bridge(lm);
+        applyDepth(hands);
         keepConnected(hands);
       } else mctx.drawImage(hull, 0, 0);
     }
@@ -452,10 +464,8 @@ function makeCompositor() {
 // ---------- Hand owner view ----------
 const out = $("out"), ox = out.getContext("2d");
 let comp = null;
-const gateC = canvas(224, 224), gx = gateC.getContext("2d");
 const hVideo = $("hVideo"), remote = $("hRemote");
 let cutter = null, running = false, bgImg = null, peer = null, remoteOk = false;
-const gate = { ok: false, score: null, until: 0, busy: false, last: 0 };
 let fps = 0, fpsN = 0, fpsT = performance.now(), info = { hands: 0, object: 0 };
 
 $("hBg").addEventListener("change", (e) => {
@@ -479,21 +489,6 @@ function drawScene(W, H) {
   }
 }
 
-async function gateCheck(now) {
-  if (!models.nsfw) { gate.ok = false; return; }
-  if (gate.busy || now - gate.last < CFG.NSFW_EVERY_MS) return;
-  gate.busy = true; gate.last = now;
-  gx.drawImage(out, 0, 0, 224, 224);
-  try {
-    const p = await models.nsfw.classify(gateC);
-    const s = p.filter((q) => CFG.NSFW_CLASSES.includes(q.className)).reduce((a, q) => a + q.probability, 0);
-    gate.score = s;
-    if (s >= CFG.NSFW_BLOCK) gate.until = performance.now() + CFG.NSFW_HOLD_MS;
-    gate.ok = performance.now() >= gate.until;
-  } catch (e) { console.error(e); gate.ok = false; }
-  gate.busy = false;
-}
-
 function render() {
   if (!cutter) return;
   info = cutter.step();
@@ -507,23 +502,15 @@ function render() {
     if (!comp) comp = makeCompositor();
     ox.drawImage(comp.render(out, cutter.pack, W, H, mirror), 0, 0, W, H);
   }
-  // Safety gate checks what is on screen; withheld frames are covered
-  gateCheck(performance.now());
-  if (!gate.ok) {
-    drawScene(W, H);
-    ox.fillStyle = "rgba(0,0,0,.55)"; ox.fillRect(0, 0, W, H);
-    ox.fillStyle = "#fff"; ox.textAlign = "center"; ox.font = `${Math.round(H / 30)}px -apple-system, sans-serif`;
-    ox.fillText(models.nsfw ? (gate.score == null ? "Starting safety check…" : "Frame withheld by safety check") : "Safety model not loaded – output off", W / 2, H / 2);
-  }
   fpsN++; const now = performance.now();
   if (now - fpsT > 1000) { fps = fpsN * 1000 / (now - fpsT); fpsN = 0; fpsT = now; }
   const b = $("badge");
-  b.textContent = !gate.ok ? "withheld" : info.object ? `hand + ${CFG.ALLOWED[0]}` : info.hands ? "hand" : "no hand";
-  b.style.color = !gate.ok ? "var(--bad)" : info.object ? "var(--ok)" : "var(--text)";
+  b.textContent = info.object ? `hand + ${CFG.ALLOWED[0]}` : info.hands ? "hand" : "no hand";
+  b.style.color = info.object ? "var(--ok)" : "var(--text)";
   $("hStats").textContent =
     `fps ${fps.toFixed(1)} · hands ${info.hands} · object ${info.object ? info.object.toFixed(2) : "–"} · cut ${cutter.w}×${cutter.h}\n` +
     `scene ${remoteOk ? remote.videoWidth + "×" + remote.videoHeight + " (live)" : bgImg ? "image" : "default"} · ` +
-    `safety ${gate.score == null ? "pending" : gate.score.toFixed(3)} ${gate.ok ? "pass" : "withheld"}`;
+    `depth ${models.depthEstimator ? "ready" : "unavailable"}`;
 }
 let lastVT = -1;
 function loop() {
@@ -571,7 +558,7 @@ async function initHand() {
   try {
     models = await loadModels();
     $("hStart").disabled = false;
-    say(models.nsfw ? "Ready. Tap Start, then enter the code on the scene device." : "Vision ready, but safety model failed to load – output will stay off.", models.nsfw ? "ok" : "bad");
+    say("Ready. Tap Start, then enter the code on the scene device. Depth assist: " + (models.depthEstimator ? "ready" : "unavailable; existing segmentation remains active."), "ok");
   } catch (e) { console.error(e); say("Model load failed: " + e.message, "bad"); handInit = false; }
 }
 </script>
